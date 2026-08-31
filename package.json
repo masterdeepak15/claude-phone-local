@@ -4,7 +4,7 @@
   "description": "Local/offline fork of NetworkChuck's claude-phone: talk to Claude Code over 3CX/SIP with faster-whisper STT + Piper TTS in one Docker container.",
   "type": "module",
   "bin": {
-    "claude-phone": "./cli/bin/claude-phone.js"
+    "claude-phone": "cli/bin/claude-phone.js"
   },
   "files": [
     "cli/bin",
