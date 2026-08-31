@@ -44,7 +44,11 @@ class AudioForkSession extends EventEmitter {
     ws,
     callUuid,
     sampleRate = 16000,
-    endSilenceMs = 1500,
+    // Silence after speech before we finalize the utterance and start
+    // transcribing. This is pure dead air on every single turn, so it's kept
+    // as short as the VAD noise-floor tracking reliably tolerates - too low
+    // and a mid-sentence breath gets mistaken for end-of-speech.
+    endSilenceMs = parseInt(process.env.VAD_END_SILENCE_MS || '700', 10),
     minSpeechMs = 350,
     maxUtteranceMs = 60000
   }) {

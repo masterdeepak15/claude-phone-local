@@ -121,11 +121,15 @@ function isGoodbye(transcript) {
  * Priority: VOICE_RESPONSE > CUSTOM COMPLETED > COMPLETED > first sentence
  */
 function extractVoiceLine(response) {
-  // Priority 1: VOICE_RESPONSE (new format)
-  var voiceMatch = response.match(/🗣️\s*VOICE_RESPONSE:\s*([^\n]+)/im);
+  // Priority 1: VOICE_RESPONSE (new format). Stops at the next labeled line
+  // (COMPLETED, or another 🗣️/🎯 marker) rather than the first newline, so a
+  // longer answer that wraps onto multiple lines isn't truncated. The word cap
+  // is a sanity ceiling against a runaway response, not a target length - real
+  // answers that need more room than a one-liner are expected and fine.
+  var voiceMatch = response.match(/🗣️\s*VOICE_RESPONSE:\s*([\s\S]+?)(?=\n\s*🎯|\n\s*🗣️|$)/im);
   if (voiceMatch) {
     var text = voiceMatch[1].trim().replace(/\*+/g, '').replace(/\[.*?\]/g, '').trim();
-    if (text && text.split(/\s+/).length <= 60) {
+    if (text && text.split(/\s+/).length <= 200) {
       return text;
     }
   }
@@ -241,6 +245,11 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
     session = await sessionPromise;
     console.log('[' + new Date().toISOString() + '] AUDIO Fork connected');
 
+    // Pre-render the goodbye clip in the background so hanging up doesn't
+    // wait on a fresh Piper round-trip right when the caller wants off the
+    // line. Regenerated per detected language below since turnVoice can change.
+    let goodbyeUrlPromise = ttsService.generateSpeech("Goodbye! Call again anytime.", turnVoice);
+
     // Main conversation loop
     let turnCount = 0;
     const MAX_TURNS = 20;
@@ -292,9 +301,15 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
       const detectedLang = sttResult.language;
 
       // Answer in whatever language the caller just used.
+      const previousTurnVoice = turnVoice;
       turnVoice = voiceForLanguage(detectedLang, voiceId);
       console.log('[' + new Date().toISOString() + '] WHISPER [' + (detectedLang || '?') +
         ' -> voice ' + turnVoice + ']: "' + transcript + '"');
+
+      // Re-render the pre-warmed goodbye clip if the caller's language changed.
+      if (turnVoice !== previousTurnVoice) {
+        goodbyeUrlPromise = ttsService.generateSpeech("Goodbye! Call again anytime.", turnVoice);
+      }
 
       if (!transcript || transcript.trim().length < 2) {
         const clarifyUrl = await ttsService.generateSpeech("Sorry, I didn't catch that. Could you repeat?", turnVoice);
@@ -303,10 +318,20 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
       }
 
       if (isGoodbye(transcript)) {
-        const byeUrl = await ttsService.generateSpeech("Goodbye! Call again anytime.", turnVoice);
+        const byeUrl = await goodbyeUrlPromise;
         await endpoint.play(byeUrl);
         break;
       }
+
+      // Fire the Claude query immediately - everything else in this block
+      // (thinking phrase, hold music/filler loop) runs concurrently with it
+      // instead of blocking it, since generating+playing the thinking phrase
+      // used to add its own TTS round-trip before the query even started.
+      console.log('[' + new Date().toISOString() + '] CLAUDE Querying (device: ' + deviceName + ')...');
+      const claudeQueryPromise = claudeBridge.query(
+        transcript,
+        { callId: callUuid, devicePrompt: devicePrompt }
+      );
 
       // THINKING FEEDBACK
       const thinkingPhrase = getRandomThinkingPhrase();
@@ -342,14 +367,9 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
         }
       })();
 
-      // Query Claude with device-specific prompt
-      console.log('[' + new Date().toISOString() + '] CLAUDE Querying (device: ' + deviceName + ')...');
       let claudeResponse;
       try {
-        claudeResponse = await claudeBridge.query(
-          transcript,
-          { callId: callUuid, devicePrompt: devicePrompt }
-        );
+        claudeResponse = await claudeQueryPromise;
       } finally {
         waiting = false;
         try { await keepAlive; } catch (e) {}
@@ -383,9 +403,11 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
   } finally {
     console.log('[' + new Date().toISOString() + '] CONVERSATION Cleanup...');
 
-    try {
-      await claudeBridge.endSession(callUuid);
-    } catch (e) {}
+    // Fire-and-forget: this is a host-side HTTP bookkeeping call with its own
+    // multi-second timeout. Awaiting it here used to leave the call connected
+    // and silent for up to 5s after the caller said goodbye, before the SIP
+    // dialog was actually torn down.
+    claudeBridge.endSession(callUuid).catch(function () {});
 
     if (forkRunning) {
       try {

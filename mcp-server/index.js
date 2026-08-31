@@ -37,10 +37,19 @@ const TOOLS = [
       'hit a blocker, or finished something they asked to be told about.\n\n' +
       'RETURNS IMMEDIATELY - it does not wait for the call to finish, so keep working ' +
       'on the task while the phone rings.\n\n' +
-      'mode="conversation" keeps the line open so they can answer back and the voice ' +
-      'agent talks with them. To hear what they said, call call_status with the ' +
-      'returned callId once you reach a point where their answer matters. If they do ' +
-      'not pick up or say nothing, the call ends by itself and call_status reports it.',
+      'CHOOSING THE MODE - this is not optional, pick correctly:\n' +
+      '- mode="announce": speaks the message and hangs up. NO reply is ever collected, ' +
+      'not even if your message ends in a question. Only use this for pure FYI ' +
+      'notifications where you genuinely do not need anything back ("the build finished").\n' +
+      '- mode="conversation": keeps the line open so they can answer back and the voice ' +
+      'agent talks with them. REQUIRED whenever your message asks a question, requests a ' +
+      'decision, says "let me know", or the task you are calling about is not actually ' +
+      'finished until they respond.\n\n' +
+      'If you use mode="conversation", the call is NOT done when this tool returns - ' +
+      'you MUST poll call_status with the returned callId (a few times, spaced out, while ' +
+      'continuing other work) until state is COMPLETED, then read conversationHistory for ' +
+      'what they said before treating the task as finished. Calling call_me and moving on ' +
+      'without ever checking call_status silently discards their answer - never do that.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -130,10 +139,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             `Calling ${to} now (callId=${callId}, status=${out.status || 'started'}). ` +
             'This returned immediately - carry on with the task while it rings.' +
             (mode === 'conversation'
-              ? `\n\nConversation mode: they can reply. When you need their answer, call ` +
-                `call_status with callId=${callId} and read conversationHistory. If they ` +
-                'do not answer or stay silent, the call ends on its own.'
-              : '\n\nAnnounce mode: it speaks the message and hangs up. No reply is collected.'),
+              ? `\n\nConversation mode - this task is NOT finished yet. You must poll ` +
+                `call_status with callId=${callId} until state is COMPLETED, then read ` +
+                'conversationHistory for their reply before considering this done. Do not ' +
+                'stop after this message - come back to call_status.'
+              : '\n\nAnnounce mode: it speaks the message and hangs up. No reply is collected. ' +
+                'If you actually needed an answer, you used the wrong mode - call call_me ' +
+                'again with mode="conversation".'),
         }],
       };
     }

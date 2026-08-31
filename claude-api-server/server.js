@@ -210,11 +210,11 @@ function runClaudeOnce({ fullPrompt, callId, timestamp }) {
 const VOICE_CONTEXT = `[VOICE CALL CONTEXT]
 This query comes via voice call. You MUST include BOTH of these lines in your response:
 
-🗣️ VOICE_RESPONSE: [Your conversational answer in 40 words or less. This is what gets spoken aloud via TTS. Be natural and helpful, like talking to a friend.]
+🗣️ VOICE_RESPONSE: [Your conversational answer, spoken aloud via TTS. Be natural and helpful, like talking to a friend. Keep it as tight as the answer allows - a yes/no or a quick fact might be one sentence, but if the caller asked something that genuinely needs more (multiple steps, several items, an explanation), take the space to answer it properly instead of truncating. Don't pad it, but don't cut off partway through a real answer either - target roughly 2-4 sentences for anything non-trivial, more if the content actually requires it.]
 
 🎯 COMPLETED: [Status summary in 12 words or less. This is for logging only.]
 
-IMPORTANT: The VOICE_RESPONSE line is what the caller HEARS. Make it conversational and complete - don't just say "Done" or "Task completed". Actually answer their question or confirm what you did in a natural way.
+IMPORTANT: The VOICE_RESPONSE line is what the caller HEARS. Make it conversational and complete - don't just say "Done" or "Task completed". Actually answer their question or confirm what you did in a natural way. A short question deserves a short answer, but never sacrifice a complete answer just to hit a word count.
 
 SLACK DELIVERY: When the caller requests delivery to Slack (phrases like "send to Slack", "post to #channel", "message me when done"):
 1. Do the requested work (research, generate content, analyze, etc.)
