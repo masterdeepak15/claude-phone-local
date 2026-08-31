@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { createRequire } from 'node:module';
 import { setupCommand } from '../lib/commands/setup.js';
 import { startCommand } from '../lib/commands/start.js';
 import { stopCommand } from '../lib/commands/stop.js';
@@ -20,12 +21,15 @@ import { uninstallCommand } from '../lib/commands/uninstall.js';
 import { registerMcpServerWithOutput, mcpServerPath } from '../lib/mcp-register.js';
 import { loadConfig as _loadCfgForMcp } from '../lib/config.js';
 
+const require = createRequire(import.meta.url);
+const pkg = require('../../package.json');
+
 const program = new Command();
 
 program
   .name('claude-phone')
   .description('Voice interface for Claude Code via SIP - Call your AI, and your AI can call you')
-  .version('1.0.0');
+  .version(pkg.version);
 
 program
   .command('setup')
