@@ -1,7 +1,7 @@
 {
   "name": "claude-phone-local",
   "version": "2.0.0",
-  "description": "Talk to your local Claude Code CLI over the phone via 3CX/SIP. Fully offline speech (faster-whisper STT + Piper TTS) in a single Docker container -- no OpenAI or ElevenLabs API keys needed.",
+  "description": "Local/offline fork of NetworkChuck's claude-phone: talk to Claude Code over 3CX/SIP with faster-whisper STT + Piper TTS in one Docker container.",
   "type": "module",
   "bin": {
     "claude-phone": "./cli/bin/claude-phone.js"
@@ -26,7 +26,7 @@
     "!voice-app/audio-temp/**",
     "!tts-local/voices/**",
     "!**/.env",
-    "!mcp-server/node_modules/**"
+    "!**/node_modules/**"
   ],
   "scripts": {
     "postinstall": "node ./cli/bin/postinstall.js || true",
