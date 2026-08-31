@@ -18,9 +18,14 @@ Claude Phone gives your Claude Code installation a phone number. You can:
 | Requirement | Where to Get It | Notes |
 |-------------|-----------------|-------|
 | **3CX Cloud Account** | [3cx.com](https://www.3cx.com/) | Free tier works |
-| **ElevenLabs API Key** | [elevenlabs.io](https://elevenlabs.io/) | For text-to-speech |
-| **OpenAI API Key** | [platform.openai.com](https://platform.openai.com/) | For Whisper speech-to-text |
-| **Claude Code CLI** | [claude.ai/code](https://claude.ai/code) | Requires Claude Max subscription |
+| **Docker** | [docker.com](https://www.docker.com/) | Runs drachtio, FreeSWITCH, and the local STT/TTS containers |
+| **Claude Code CLI** | [claude.ai/code](https://claude.ai/code) | Requires Claude Max subscription, must already be logged in |
+
+Speech-to-text and text-to-speech run **locally by default** — no
+ElevenLabs or OpenAI API key needed. `faster-whisper` and `Piper` run as
+Docker containers on your own machine (see `README-LOCAL-MODE.md`). Cloud
+mode (ElevenLabs + OpenAI) is still available as an opt-in during
+`claude-phone setup` if you'd rather use those instead.
 
 ## Platform Support
 

@@ -16,6 +16,12 @@ claude-phone logs     # View recent logs
 
 ### "API key validation failed"
 
+> This section only applies if you chose **cloud mode** (ElevenLabs +
+> OpenAI) during `claude-phone setup`. If you're on the default **local
+> mode** (faster-whisper + Piper), there are no API keys to validate — see
+> `README-LOCAL-MODE.md` instead, and check `claude-phone doctor` for
+> local STT/TTS container health.
+
 **Symptom:** Setup fails when validating ElevenLabs or OpenAI key.
 
 **Causes & Solutions:**
@@ -183,7 +189,7 @@ claude-phone start
    claude-phone logs voice-app | grep -i error
    ```
 
-### Whisper transcription errors
+### Whisper / faster-whisper transcription errors
 
 **Symptom:** Claude responds to wrong words or doesn't understand speech.
 
@@ -191,15 +197,22 @@ claude-phone start
 
 | Cause | Solution |
 |-------|----------|
-| OpenAI billing exhausted | Add credits to OpenAI account |
+| Local mode: model too small | Try a bigger `WHISPER_MODEL` (`small`/`medium`) in `.env`, then `claude-phone start` again |
+| Local mode: `stt-local` container down | `claude-phone doctor`, `docker compose logs stt-local` |
+| Cloud mode: OpenAI billing exhausted | Add credits to OpenAI account |
 | Audio quality poor | Check microphone, reduce background noise |
 | Network latency | Audio chunks may be lost; check connection |
 
-### ElevenLabs TTS errors
+### TTS errors (Piper / ElevenLabs)
 
 **Symptom:** Claude's responses aren't spoken, or voice sounds wrong.
 
-**Solutions:**
+**Local mode solutions:**
+1. Confirm the Piper voice files exist: `tts-local/voices/<voice>.onnx` and `.onnx.json`
+2. `claude-phone doctor` — checks `tts-local` container health
+3. `docker compose logs tts-local` for the actual error
+
+**Cloud mode solutions:**
 1. Check ElevenLabs character quota isn't exhausted
 2. Verify voice ID is valid: `claude-phone device list`
 3. Check API key still works

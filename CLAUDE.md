@@ -15,8 +15,8 @@ Claude Phone gives your Claude Code installation a phone number through 3CX PBX 
 | Language | Node.js (ES modules for CLI, CommonJS for voice-app) |
 | SIP Server | drachtio-srf |
 | Media Server | FreeSWITCH (via drachtio-fsmrf) |
-| STT | OpenAI Whisper API |
-| TTS | ElevenLabs API |
+| STT | faster-whisper (local, default) or OpenAI Whisper API (opt-in cloud) |
+| TTS | Piper (local, default) or ElevenLabs API (opt-in cloud) |
 | AI Backend | Claude Code CLI (via HTTP wrapper) |
 | PBX | 3CX (any SIP-compatible works) |
 | Container | Docker Compose |
@@ -132,8 +132,8 @@ claude-phone/
 │   │   ├── query-routes.js   # Query API endpoints
 │   │   ├── registrar.js      # Single SIP registration
 │   │   ├── sip-handler.js    # Inbound call handling
-│   │   ├── tts-service.js    # ElevenLabs TTS
-│   │   └── whisper-client.js # OpenAI Whisper STT
+│   │   ├── tts-service.js    # Local Piper TTS (default) / ElevenLabs (opt-in cloud)
+│   │   └── whisper-client.js # Local faster-whisper STT (default) / OpenAI (opt-in cloud)
 │   ├── DEPLOYMENT.md         # Production deployment guide
 │   ├── README-OUTBOUND.md    # Outbound calling API docs
 │   └── API-QUERY-CONTRACT.md # Query API specification
