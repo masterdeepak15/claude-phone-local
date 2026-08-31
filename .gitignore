@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.env
+.DS_Store
+audio-temp/
+voice-app/audio/*.wav
+voice-app/audio/*.mp3
+tts-local/voices/*.onnx
+tts-local/voices/*.onnx.json
+*.tgz

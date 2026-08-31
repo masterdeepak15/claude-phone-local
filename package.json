@@ -1,0 +1,53 @@
+{
+  "name": "claude-phone-local",
+  "version": "1.0.0",
+  "description": "Talk to your local Claude Code CLI over the phone via 3CX -- no OpenAI/ElevenLabs API keys needed (local faster-whisper STT + Piper TTS).",
+  "type": "module",
+  "bin": {
+    "claude-phone": "./cli/bin/claude-phone.js"
+  },
+  "files": [
+    "cli/bin",
+    "cli/lib",
+    "cli/README.md",
+    "voice-app",
+    "claude-api-server",
+    "stt-local",
+    "tts-local",
+    "docker-compose.yml",
+    ".env.example",
+    "README.md",
+    "README-LOCAL-MODE.md",
+    "docs"
+  ],
+  "scripts": {
+    "postinstall": "node ./cli/bin/postinstall.js || true"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "voice",
+    "sip",
+    "3cx",
+    "ai",
+    "whisper",
+    "piper",
+    "offline",
+    "self-hosted"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "inquirer": "^9.2.15",
+    "chalk": "^5.3.0",
+    "ora": "^8.0.1",
+    "axios": "^1.6.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
