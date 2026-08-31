@@ -2,237 +2,230 @@
   <img src="assets/logo.png" alt="Claude Phone" width="200">
 </p>
 
-# Claude Phone
+# Claude Phone (Local)
 
 Voice interface for Claude Code via SIP/3CX. Call your AI, and your AI can call you.
 
+> **Based on [theNetworkChuck/claude-phone](https://github.com/theNetworkChuck/claude-phone).**
+> This is a modified fork of NetworkChuck's original project. All credit for the
+> original design and implementation goes to him — see [Credits](#credits).
+>
+> **What this fork changes:** speech runs fully offline (faster-whisper + Piper
+> instead of OpenAI Whisper and ElevenLabs, so no API keys), English/Hindi/Marathi
+> with automatic language detection, barge-in so you can interrupt mid-sentence,
+> an MCP server so Claude can phone *you*, and the whole stack in a **single
+> Docker container** with a persistent `./data` volume.
+
 ## What is this?
 
-Claude Phone gives your Claude Code installation a phone number. You can:
+Claude Phone gives your Claude Code installation a phone number:
 
-- **Inbound**: Call an extension and talk to Claude - run commands, check status, ask questions
-- **Outbound**: Your server can call YOU with alerts, then have a conversation about what to do
+- **Inbound** — call an extension and talk to Claude. Ask it to check your PC,
+  run commands, or answer questions. It has real shell access to the host.
+- **Outbound** — Claude can call *you* when it needs a decision, then talk it
+  through. Available over HTTP or as an [MCP tool](docs/MCP-SERVER.md).
+
+Everything speech-related is **local and free**. The only paid piece is the
+Claude Code CLI itself.
 
 ## Prerequisites
 
-| Requirement | Where to Get It | Notes |
-|-------------|-----------------|-------|
-| **3CX Cloud Account** | [3cx.com](https://www.3cx.com/) | Free tier works |
-| **Docker** | [docker.com](https://www.docker.com/) | Runs drachtio, FreeSWITCH, and the local STT/TTS containers |
-| **Claude Code CLI** | [claude.ai/code](https://claude.ai/code) | Requires Claude Max subscription, must already be logged in |
+Manual, one time:
 
-Speech-to-text and text-to-speech run **locally by default** — no
-ElevenLabs or OpenAI API key needed. `faster-whisper` and `Piper` run as
-Docker containers on your own machine (see `README-LOCAL-MODE.md`). Cloud
-mode (ElevenLabs + OpenAI) is still available as an opt-in during
-`claude-phone setup` if you'd rather use those instead.
+- **Docker Desktop** (WSL2 backend on Windows)
+- **Claude Code CLI**, logged in — `claude --version`
+- **Node.js 18+** on the host, for `claude-api-server`
+- A **SIP extension** on 3CX (or any SIP PBX)
 
-## Platform Support
+Everything else — speech models, voices, device config — is downloaded and
+generated automatically on first run.
 
-| Platform | Status |
-|----------|--------|
-| **macOS** | Fully supported |
-| **Linux** | Fully supported (including Raspberry Pi) |
-| **Windows** | Not supported (may work with WSL) |
-
-## Quick Start
-
-### 1. Install
+## Quick start
 
 ```bash
-npm install -g claude-phone-local
+git clone <your-fork> claude-phone-local
+cd claude-phone-local
+cp .env.example .env
 ```
 
-The installer will:
-- Check for Node.js 18+, Docker, and git (offers to install if missing)
-- Clone the repository to `~/.claude-phone-cli`
-- Install dependencies
-- Create the `claude-phone` command
-
-### 2. Setup
+Edit `.env` — the three that matter:
 
 ```bash
-claude-phone setup
+EXTERNAL_IP=172.16.14.225      # this PC's LAN IP (ipconfig / ip addr)
+SIP_REGISTRAR=172.16.14.225    # your LOCAL 3CX SBC, not the cloud domain
+SIP_EXTENSION=17512            # plus SIP_AUTH_ID and SIP_PASSWORD
 ```
 
-The setup wizard asks what you're installing:
-
-| Type | Use Case | What It Configures |
-|------|----------|-------------------|
-| **Voice Server** | Pi or dedicated voice box | Docker containers, connects to remote API server |
-| **API Server** | Mac/Linux with Claude Code | Just the Claude API wrapper |
-| **Both** | All-in-one single machine | Everything on one box |
-
-### 3. Start
+Start it:
 
 ```bash
-claude-phone start
+docker compose up -d --build          # first run downloads ~2GB of models
+docker compose logs -f                # watch the bootstrap
 ```
 
-## Deployment Modes
-
-### All-in-One (Single Machine)
-
-Best for: Mac or Linux server that's always on and has Claude Code installed.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Your Phone                                                  │
-│      │                                                       │
-│      ↓ Call extension 9000                                  │
-│  ┌─────────────┐                                            │
-│  │     3CX     │  ← Cloud PBX                               │
-│  └──────┬──────┘                                            │
-│         │                                                    │
-│         ↓                                                    │
-│  ┌─────────────────────────────────────────────┐           │
-│  │     Single Server (Mac/Linux)                │           │
-│  │  ┌───────────┐    ┌───────────────────┐    │           │
-│  │  │ voice-app │ ←→ │ claude-api-server │    │           │
-│  │  │ (Docker)  │    │ (Claude Code CLI) │    │           │
-│  │  └───────────┘    └───────────────────┘    │           │
-│  └─────────────────────────────────────────────┘           │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Setup:**
-```bash
-claude-phone setup    # Select "Both"
-claude-phone start    # Launches Docker + API server
-```
-
-### Split Mode (Pi + API Server)
-
-Best for: Dedicated Pi for voice services, Claude running on your main machine.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Your Phone                                                  │
-│      │                                                       │
-│      ↓ Call extension 9000                                  │
-│  ┌─────────────┐                                            │
-│  │     3CX     │  ← Cloud PBX                               │
-│  └──────┬──────┘                                            │
-│         │                                                    │
-│         ↓                                                    │
-│  ┌─────────────┐         ┌─────────────────────┐           │
-│  │ Raspberry Pi │   ←→   │ Mac/Linux with      │           │
-│  │ (voice-app)  │  HTTP  │ Claude Code CLI     │           │
-│  └─────────────┘         │ (claude-api-server) │           │
-│                          └─────────────────────┘           │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**On your Pi (Voice Server):**
-```bash
-claude-phone setup    # Select "Voice Server", enter API server IP when prompted
-claude-phone start    # Launches Docker containers
-```
-
-**On your Mac/Linux (API Server):**
-```bash
-claude-phone api-server    # Starts Claude API wrapper on port 3333
-```
-
-Note: On the API server machine, you don't need to run `claude-phone setup` first - the `api-server` command works standalone.
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `claude-phone setup` | Interactive configuration wizard |
-| `claude-phone start` | Start services based on installation type |
-| `claude-phone stop` | Stop all services |
-| `claude-phone status` | Show service status |
-| `claude-phone doctor` | Health check for dependencies and services |
-| `claude-phone api-server [--port N]` | Start API server standalone (default: 3333) |
-| `claude-phone device add` | Add a new device/extension |
-| `claude-phone device list` | List configured devices |
-| `claude-phone device remove <name>` | Remove a device |
-| `claude-phone logs [service]` | Tail logs (voice-app, drachtio, freeswitch) |
-| `claude-phone config show` | Display configuration (secrets redacted) |
-| `claude-phone config path` | Show config file location |
-| `claude-phone config reset` | Reset configuration |
-| `claude-phone backup` | Create configuration backup |
-| `claude-phone restore` | Restore from backup |
-| `claude-phone update` | Update Claude Phone |
-| `claude-phone uninstall` | Complete removal |
-
-## Device Personalities
-
-Each SIP extension can have its own identity with a unique name, voice, and personality prompt:
+In a second terminal, start the host-side Claude wrapper:
 
 ```bash
-claude-phone device add
+cd claude-api-server
+CLAUDE_MODEL=claude-sonnet-5 node server.js
 ```
 
-Example devices:
-- **Morpheus** (ext 9000) - General assistant
-- **Cephanie** (ext 9002) - Storage monitoring bot
+When you see this, call your extension:
 
-## API Endpoints
+```
+[MULTI-REGISTRAR] Maya SUCCESS - Registered as ext 17512
+```
 
-The voice-app exposes these endpoints on port 3000:
+## Architecture
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/api/outbound-call` | Initiate an outbound call |
-| GET | `/api/call/:callId` | Get call status |
-| GET | `/api/calls` | List active calls |
-| POST | `/api/query` | Query a device programmatically |
-| GET | `/api/devices` | List configured devices |
+One container, one host process:
 
-See [Outbound API Reference](voice-app/README-OUTBOUND.md) for details.
+```
+Phone → 3CX cloud → 3CX SBC (HOST :5060)
+                      │
+        ┌─────────────▼───────────────────────────┐
+        │  claude-phone container                 │
+        │  drachtio · FreeSWITCH · voice-app      │
+        │  faster-whisper · Piper                 │
+        └─────────────┬───────────────────────────┘
+                      │ host.docker.internal:3333
+                      ▼
+        claude-api-server (HOST) → claude.exe (HOST)
+```
 
-## Troubleshooting
+Inside the container everything talks over `127.0.0.1`. Persistent state lives
+in `./data` — models, voices and config survive `docker compose down`.
 
-### Quick Diagnostics
+See [CLAUDE.md](CLAUDE.md) for the full architecture and design decisions.
+
+## Languages
+
+English, Hindi and Marathi, detected per utterance — switch language mid-call
+and she follows, replying in the same language with a matching voice.
 
 ```bash
-claude-phone doctor    # Automated health checks
-claude-phone status    # Service status
-claude-phone logs      # View logs
+STT_LANGUAGE=auto
+SUPPORTED_LANGS=en,hi,mr
 ```
 
-### Common Issues
+Details and the accuracy/speed trade-off: [docs/LANGUAGES.md](docs/LANGUAGES.md).
 
-| Problem | Likely Cause | Solution |
-|---------|--------------|----------|
-| Calls connect but no audio | Wrong external IP | Re-run `claude-phone setup`, verify LAN IP |
-| Extension not registering | 3CX SBC not running | Check 3CX admin panel |
-| "Sorry, something went wrong" | API server unreachable | Check `claude-phone status` |
-| Port conflict on startup | 3CX SBC using port 5060 | Setup auto-detects this; re-run setup |
+## Talking to her
 
-See [Troubleshooting Guide](docs/TROUBLESHOOTING.md) for more.
+- **Interrupt any time.** Start speaking and she stops — no waiting for her to
+  finish.
+- **Hang up by saying so:** "goodbye", "bye", "end call", "close the call",
+  "बंद करो", "ठेवतो".
+- **One session per call.** The whole call is a single Claude conversation, so
+  she remembers what you said two questions ago.
+- **She fills the silence** with a soft hold tone and the occasional spoken
+  line while she works, instead of going dead.
+
+## Claude calling you
+
+Register the [MCP server](docs/MCP-SERVER.md) and ask in plain language:
+
+> "Run the migration and call me if anything needs a decision."
+
+```bash
+cd mcp-server && npm install
+claude mcp add claude-phone --scope user \
+  --env PHONE_DEFAULT_TO=17510 \
+  -- node /absolute/path/to/mcp-server/index.js
+```
 
 ## Configuration
 
-Configuration is stored in `~/.claude-phone/config.json` with restricted permissions (chmod 600).
+Common knobs in `.env`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXTERNAL_IP` | — | This PC's LAN IP, for RTP |
+| `WHISPER_MODEL` | `medium` | `small` is ~3x faster, weaker on Marathi |
+| `STT_LANGUAGE` | `auto` | Or pin `en` / `hi` / `mr` |
+| `CLAUDE_TIMEOUT` | `180` | Seconds before giving up |
+| `VAD_NOISE_MULT` | `2.5` | How far above the noise floor counts as speech |
+| `BARGE_MULT` | `1.6` | How hard it is to interrupt her |
+| `PHONE_ENABLE_MCP` | off | Give the phone agent your MCP tools (slower) |
+
+## API endpoints
+
+**voice-app (3000)**
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/outbound-call` | Start an outbound call |
+| GET | `/api/call/:id` | Call status |
+| POST | `/api/call/:id/hangup` | End a call |
+| GET | `/api/devices` | List configured devices |
+
+**claude-api-server (3333, host)**
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/ask` | Send a prompt |
+| GET | `/health` | Health check |
+
+## Security
+
+`claude-api-server` runs the CLI with `--dangerously-skip-permissions`. That
+means **no prompts, all tools, full access to this PC as your user**, with your
+normal `~/.claude` config. Anyone who can reach port 3333 can run commands as
+you — keep it bound to localhost.
+
+Never commit `data/config/devices.json` or `.env`; both are gitignored, and a
+`prepublishOnly` guard blocks publishing if they would ship.
+
+## Troubleshooting
 
 ```bash
-claude-phone config show    # View config (secrets redacted)
-claude-phone config path    # Show file location
+docker compose logs -f
+docker logs claude-phone 2>&1 | grep -Ei "CALL |error|503"
+curl http://127.0.0.1:3333/health
 ```
 
-## Development
-
-```bash
-# Run tests
-npm test
-
-# Lint
-npm run lint
-npm run lint:fix
-```
+Straight to voicemail, connected-but-silent, slow answers, restart loops and
+more: **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**.
 
 ## Documentation
 
-- [CLI Reference](cli/README.md) - Detailed CLI documentation
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
-- [Outbound API](voice-app/README-OUTBOUND.md) - Outbound calling API reference
-- [Deployment](voice-app/DEPLOYMENT.md) - Production deployment guide
-- [Claude Code Skill](docs/CLAUDE-CODE-SKILL.md) - Build a "call me" skill for Claude Code
+- [CLAUDE.md](CLAUDE.md) — architecture and design decisions
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — every failure mode we hit
+- [docs/LANGUAGES.md](docs/LANGUAGES.md) — Hindi/Marathi setup
+- [docs/MCP-SERVER.md](docs/MCP-SERVER.md) — letting Claude call you
+- [README-LOCAL-MODE.md](README-LOCAL-MODE.md) — Windows + 3CX specifics
+- [voice-app/README-OUTBOUND.md](voice-app/README-OUTBOUND.md) — outbound API
+- [voice-app/DEPLOYMENT.md](voice-app/DEPLOYMENT.md) — production notes
+- [cli/README.md](cli/README.md) — CLI reference
 
 ## License
 
-MIT
+MIT — same as the original project.
+
+## Credits
+
+This project is a fork of **[claude-phone by NetworkChuck](https://github.com/theNetworkChuck/claude-phone)**
+(`https://github.com/theNetworkChuck/claude-phone.git`). The original concept,
+SIP/3CX integration and conversation design are his work — this fork only adapts
+it for fully-offline speech and multilingual use.
+
+If you find this useful, go support the original:
+
+- Original repository: <https://github.com/theNetworkChuck/claude-phone>
+- NetworkChuck on YouTube: <https://www.youtube.com/@NetworkChuck>
+
+### Changes in this fork
+
+| Area | Original | This fork |
+|------|----------|-----------|
+| STT | OpenAI Whisper API (key required) | faster-whisper, local (no key) |
+| TTS | ElevenLabs API (key required) | Piper, local (no key) |
+| Languages | English | English, Hindi, Marathi (auto-detected) |
+| Containers | Multiple services | Single container via supervisord |
+| Persistence | — | `./data` volume; models survive restarts |
+| Setup | Manual model/config steps | Automated on first run |
+| Conversation | Wait for her to finish | Barge-in — interrupt any time |
+| Outbound | HTTP API | HTTP API + MCP server |
+
+Cloud STT/TTS remain available as an opt-in (`STT_MODE=cloud` / `TTS_MODE=cloud`)
+for anyone who prefers the original behaviour.

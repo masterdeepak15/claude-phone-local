@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .env
+voice-app/config/devices.json
 .DS_Store
 audio-temp/
 voice-app/audio/*.wav
@@ -8,3 +9,11 @@ voice-app/audio/*.mp3
 tts-local/voices/*.onnx
 tts-local/voices/*.onnx.json
 *.tgz
+
+# Runtime data volume: Whisper models, Piper voices, generated audio, live config.
+# ~2GB, all re-downloaded automatically on first run.
+data/
+
+# Piper voice models are fetched at runtime, never committed
+tts-local/voices/*.onnx
+tts-local/voices/*.onnx.json

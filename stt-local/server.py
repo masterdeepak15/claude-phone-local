@@ -3,8 +3,11 @@ Local speech-to-text sidecar for claude-phone.
 Wraps faster-whisper behind a tiny HTTP API so voice-app (Node) can call it
 the same way it used to call OpenAI's Whisper API — except fully offline.
 
-POST /transcribe   multipart form: file=<wav bytes>, language=en
-                    -> {"text": "..."}
+POST /transcribe   multipart form: file=<wav bytes>, language=en|hi|mr|auto
+                    -> {"text": "...", "language": "hi"}
+                    language=auto (or empty) lets Whisper detect it and the
+                    detected code comes back so the caller can pick a matching
+                    TTS voice.
 GET  /health        -> {"status": "ok", "model": "small"}
 """
 
@@ -33,8 +36,10 @@ def health():
 @app.post("/transcribe")
 async def transcribe(file: UploadFile, language: str = Form("en")):
     audio_bytes = await file.read()
-    segments, _ = model.transcribe(
-        io.BytesIO(audio_bytes), language=language or "en", vad_filter=True
+    # "auto"/"" -> None makes faster-whisper detect the language itself.
+    lang = None if language in ("auto", "", None) else language
+    segments, info = model.transcribe(
+        io.BytesIO(audio_bytes), language=lang, vad_filter=True
     )
     text = " ".join(seg.text.strip() for seg in segments).strip()
-    return {"text": text}
+    return {"text": text, "language": info.language}

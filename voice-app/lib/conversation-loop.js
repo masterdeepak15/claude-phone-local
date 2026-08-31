@@ -14,10 +14,15 @@
 
 const logger = require('./logger');
 
+// FreeSWITCH (a separate container) fetches/connects to these - must be the
+// voice-app container's address, not FreeSWITCH's own loopback.
+const AUDIO_BASE_URL = process.env.AUDIO_BASE_URL || 'http://voice-app:3000';
+const AUDIO_WS_HOST = new URL(AUDIO_BASE_URL).hostname;
+
 // Audio cue URLs
-const READY_BEEP_URL = 'http://127.0.0.1:3000/static/ready-beep.wav';
-const GOTIT_BEEP_URL = 'http://127.0.0.1:3000/static/gotit-beep.wav';
-const HOLD_MUSIC_URL = 'http://127.0.0.1:3000/static/hold-music.mp3';
+const READY_BEEP_URL = `${AUDIO_BASE_URL}/static/ready-beep.wav`;
+const GOTIT_BEEP_URL = `${AUDIO_BASE_URL}/static/gotit-beep.wav`;
+const HOLD_MUSIC_URL = `${AUDIO_BASE_URL}/static/hold-music.mp3`;
 
 // Claude Code-style thinking phrases
 const THINKING_PHRASES = [
@@ -134,8 +139,14 @@ async function runConversationLoop(endpoint, dialog, callUuid, options) {
     initialContext = null,
     skipGreeting = false,
     deviceConfig = null,
-    maxTurns = 20
+    maxTurns = 20,
+    // Outbound calls need to give up rather than sit there asking "are you still
+    // there?" twenty times into an empty room.
+    maxSilentTurns = parseInt(process.env.MAX_SILENT_TURNS || '2', 10),
+    onTurn = null
   } = options;
+
+  let silentTurns = 0;
 
   // Extract devicePrompt and voiceId from deviceConfig (for Cephanie etc)
   const devicePrompt = deviceConfig?.prompt || null;
@@ -187,7 +198,7 @@ async function runConversationLoop(endpoint, dialog, callUuid, options) {
     }
 
     // Start audio fork for entire call
-    const wsUrl = `ws://127.0.0.1:${wsPort}/${encodeURIComponent(callUuid)}`;
+    const wsUrl = `ws://${AUDIO_WS_HOST}:${wsPort}/${encodeURIComponent(callUuid)}`;
 
     // Use try-catch for expectSession to handle race conditions
     let sessionPromise;
@@ -289,6 +300,18 @@ async function runConversationLoop(endpoint, dialog, callUuid, options) {
 
       // Handle no speech
       if (!utterance) {
+        silentTurns++;
+        if (silentTurns >= maxSilentTurns) {
+          logger.info('No response - ending call', { callUuid, silentTurns });
+          if (callActive) {
+            const byeUrl = await ttsService.generateSpeech(
+              "I'll let you go. Talk to you later.",
+              voiceId
+            );
+            await endpoint.play(byeUrl);
+          }
+          break;
+        }
         const promptUrl = await ttsService.generateSpeech(
           "I didn't hear anything. Are you still there?",
           voiceId
@@ -296,6 +319,7 @@ async function runConversationLoop(endpoint, dialog, callUuid, options) {
         if (callActive) await endpoint.play(promptUrl);
         continue;
       }
+      silentTurns = 0;
 
       // ============================================
       // GOT-IT BEEP: Signal "I heard you, processing"
@@ -384,6 +408,12 @@ async function runConversationLoop(endpoint, dialog, callUuid, options) {
 
       const responseUrl = await ttsService.generateSpeech(voiceLine, voiceId);
       if (callActive) await endpoint.play(responseUrl);
+
+      // Let the caller record what was said, so an outbound call's answer can be
+      // read back later via the status endpoint.
+      if (onTurn) {
+        try { onTurn(transcript, voiceLine); } catch (e) { /* never break the call */ }
+      }
 
       logger.info('Turn complete', { callUuid, turn: turnCount });
     }

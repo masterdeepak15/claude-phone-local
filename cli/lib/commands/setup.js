@@ -25,6 +25,7 @@ import { detect3cxSbc } from '../port-check.js';
 import { checkPiPrerequisites } from '../prerequisites.js';
 import { checkClaudeApiServer } from '../network.js';
 import { runPrereqChecks } from '../prereqs.js';
+import { registerMcpServerWithOutput } from '../mcp-register.js';
 
 /**
  * Prompt for installation type
@@ -226,6 +227,19 @@ async function setupInstallationType(installationType, existingConfig, isPi, opt
         }
       }
     }
+  }
+
+  // Register the MCP server so Claude Code can phone the user. Done here rather
+  // than in postinstall because only now do we know which extension to ring.
+  if (installationType !== 'api-server') {
+    console.log(chalk.bold('\nMCP server (lets Claude call you)'));
+    const firstDevice = config.devices && Object.keys(config.devices).length
+      ? Object.values(config.devices)[0]
+      : null;
+    registerMcpServerWithOutput({
+      defaultTo: config.sip?.callbackNumber || firstDevice?.extension || config.sip?.extension,
+      httpPort: config.server?.httpPort || 3000,
+    });
   }
 
   // Type-specific success messages

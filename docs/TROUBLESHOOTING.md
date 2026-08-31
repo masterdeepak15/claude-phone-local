@@ -1,313 +1,288 @@
-# Troubleshooting Guide
+# Troubleshooting
 
-Common issues and solutions for Claude Phone.
+Every failure mode below was hit for real on a Windows 11 + Docker Desktop +
+native 3CX SBC setup. Each entry gives the symptom, the log line that identifies
+it, and the fix.
 
-## Quick Diagnostics
-
-Start here for most problems:
-
-```bash
-claude-phone doctor   # Automated health checks
-claude-phone status   # Service status overview
-claude-phone logs     # View recent logs
-```
-
-## Setup Issues
-
-### "API key validation failed"
-
-> This section only applies if you chose **cloud mode** (ElevenLabs +
-> OpenAI) during `claude-phone setup`. If you're on the default **local
-> mode** (faster-whisper + Piper), there are no API keys to validate — see
-> `README-LOCAL-MODE.md` instead, and check `claude-phone doctor` for
-> local STT/TTS container health.
-
-**Symptom:** Setup fails when validating ElevenLabs or OpenAI key.
-
-**Causes & Solutions:**
-
-| Cause | Solution |
-|-------|----------|
-| Key is incorrect | Double-check you copied the full key |
-| No billing enabled | Add payment method to your account |
-| Account suspended | Check account status on provider dashboard |
-| Network issue | Check internet connectivity |
-
-**For OpenAI specifically:**
-- New accounts need billing enabled before API works
-- Free tier credits expire after 3 months
-- Check [platform.openai.com/account/billing](https://platform.openai.com/account/billing)
-
-**For ElevenLabs:**
-- Free tier has limited characters/month
-- Check [elevenlabs.io/subscription](https://elevenlabs.io/subscription)
-
-### "Can't detect 3CX SBC"
-
-**Symptom:** Setup can't connect to your 3CX server.
-
-**Solutions:**
-1. Verify 3CX FQDN is correct (e.g., `yourcompany.3cx.us`)
-2. Ensure 3CX SBC (Session Border Controller) is enabled
-3. Check firewall allows port 5060 (SIP) outbound
-4. Try using port 5070 if 5060 is blocked
-
-### "Docker not found" or "Docker not running"
-
-**Symptom:** Prerequisite check fails for Docker.
-
-**Solutions:**
-
-**macOS:**
-```bash
-# Install Docker Desktop
-brew install --cask docker
-# Then launch Docker Desktop from Applications
-```
-
-**Linux (Debian/Ubuntu):**
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-# Log out and back in
-```
-
-**Raspberry Pi:**
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker pi
-# Reboot the Pi
-```
-
-## Connection Issues
-
-### Calls don't connect at all
-
-**Symptom:** Phone rings forever or immediately fails.
-
-**Checklist:**
-1. Is the extension registered with 3CX?
-   ```bash
-   claude-phone status
-   # Look for "SIP Registration: OK"
-   ```
-
-2. Is the SIP domain correct?
-   ```bash
-   claude-phone config show
-   # Check sip.domain matches your 3CX FQDN
-   ```
-
-3. Are credentials correct?
-   - Log into 3CX admin panel
-   - Check extension auth ID and password match config
-
-4. Is drachtio container running?
-   ```bash
-   docker ps | grep drachtio
-   ```
-
-### Extension not registering with 3CX
-
-**Symptom:** `claude-phone status` shows SIP registration failed.
-
-**Solutions:**
-1. Verify extension exists in 3CX
-2. Check auth ID matches (usually same as extension number)
-3. Verify password is correct
-4. Ensure SBC is enabled in 3CX settings
-5. Check if another device is using the same extension
-
-### Calls connect but no audio
-
-**Symptom:** Call connects, you can see it's answered, but there's silence.
-
-**Most common cause:** Wrong `EXTERNAL_IP` setting.
-
-**Fix:**
-```bash
-# Find your server's LAN IP
-ip addr show | grep "inet " | grep -v 127.0.0.1
-
-# Re-run setup to fix
-claude-phone setup
-# Enter correct IP when prompted for "External IP"
-```
-
-**Other causes:**
-- RTP ports blocked by firewall (needs 30000-30100 UDP)
-- NAT issues (server can't receive return audio)
-- FreeSWITCH container unhealthy
-
-### RTP Port Conflict (3CX SBC)
-
-**Symptom:** Calls fail with "INCOMPATIBLE_DESTINATION" error. Logs show `AUDIO RTP REPORTS ERROR: [Bind Error! IP:port]`.
-
-**Cause:** 3CX SBC uses RTP ports 20000-20099. If FreeSWITCH uses the same range, it can't bind.
-
-**Fix:** Claude Phone uses ports 30000-30100 by default. If you upgraded from an older version:
+## First: where to look
 
 ```bash
-# Check current port config
-grep "rtp-range" ~/.claude-phone/docker-compose.yml
-
-# If it shows 20000, update to 30000:
-sed -i 's/--rtp-range-start 20000/--rtp-range-start 30000/' ~/.claude-phone/docker-compose.yml
-sed -i 's/--rtp-range-end 20100/--rtp-range-end 30100/' ~/.claude-phone/docker-compose.yml
-
-# Restart services
-claude-phone stop
-claude-phone start
+docker compose logs -f                      # everything
+docker logs claude-phone 2>&1 | grep -Ei "CALL |error|503"
+curl http://127.0.0.1:3333/health           # host Claude wrapper
 ```
 
-## Runtime Issues
-
-### "Sorry, something went wrong" on every call
-
-**Symptom:** Calls connect, but Claude always says there was an error.
-
-**Causes:**
-
-1. **API server unreachable:**
-   ```bash
-   claude-phone status
-   # Check "Claude API Server" status
-
-   # For split deployments, verify connectivity:
-   curl http://<api-server-ip>:3333/health
-   ```
-
-2. **Claude Code CLI not working:**
-   ```bash
-   # On the API server machine:
-   claude --version
-   claude "Hello"  # Test basic functionality
-   ```
-
-3. **Session errors:**
-   ```bash
-   claude-phone logs voice-app | grep -i error
-   ```
-
-### Whisper / faster-whisper transcription errors
-
-**Symptom:** Claude responds to wrong words or doesn't understand speech.
-
-**Causes & Solutions:**
-
-| Cause | Solution |
-|-------|----------|
-| Local mode: model too small | Try a bigger `WHISPER_MODEL` (`small`/`medium`) in `.env`, then `claude-phone start` again |
-| Local mode: `stt-local` container down | `claude-phone doctor`, `docker compose logs stt-local` |
-| Cloud mode: OpenAI billing exhausted | Add credits to OpenAI account |
-| Audio quality poor | Check microphone, reduce background noise |
-| Network latency | Audio chunks may be lost; check connection |
-
-### TTS errors (Piper / ElevenLabs)
-
-**Symptom:** Claude's responses aren't spoken, or voice sounds wrong.
-
-**Local mode solutions:**
-1. Confirm the Piper voice files exist: `tts-local/voices/<voice>.onnx` and `.onnx.json`
-2. `claude-phone doctor` — checks `tts-local` container health
-3. `docker compose logs tts-local` for the actual error
-
-**Cloud mode solutions:**
-1. Check ElevenLabs character quota isn't exhausted
-2. Verify voice ID is valid: `claude-phone device list`
-3. Check API key still works
-
-### Calls disconnect after a few seconds
-
-**Symptom:** Call connects, maybe plays greeting, then drops.
-
-**Causes:**
-- FreeSWITCH timeout (check logs)
-- SIP session timeout
-- Network instability
+Inside the container:
 
 ```bash
-# Check FreeSWITCH logs for clues
-claude-phone logs freeswitch | tail -100
+docker exec claude-phone bash -c 'IP=$(hostname -i|awk "{print \$1}"); \
+  for p in 5070 5080 8021 3000 9001 9002; do \
+    (echo >/dev/tcp/$IP/$p) 2>/dev/null && echo "$p UP" || echo "$p DOWN"; done'
 ```
 
-## Split Deployment Issues
+`3000`, `9001`, `9002` bind to loopback by design and will read DOWN on the
+container IP — that is correct, not a fault.
 
-### Pi can't reach API server
+---
 
-**Symptom:** Voice services start but calls fail with connection errors.
+## Call goes straight to voicemail
 
-**Diagnostics:**
+**Symptom:** "Please record your message." The app never answers.
+
+**Log:**
+```
+Connection refused (111) with tcp/[…]:5080
+CALL Error: Sip non-success response: 503
+```
+
+drachtio could not reach FreeSWITCH, so it returned 503 and 3CX fell through to
+voicemail.
+
+**Cause and fix.** FreeSWITCH binds sofia to the **container IP**, never to
+loopback, and it must *advertise* the address it actually listens on. Check the
+two do not disagree:
+
 ```bash
-# On the Pi, test connectivity:
-curl http://<api-server-ip>:3333/health
-
-# Check configured API URL:
-claude-phone config show | grep claudeApiUrl
+docker exec claude-phone sh -c 'grep -E "ext_sip_ip|ext_rtp_ip" \
+  /usr/local/freeswitch/conf/vars_diff.xml'
 ```
 
-**Solutions:**
-1. Verify API server IP is correct in Pi's config
-2. Ensure API server is running: `claude-phone api-server`
-3. Check firewall allows port 3333
-4. Verify both machines are on same network (or have routing)
+Expected — they are deliberately different:
 
-### API server won't start
+```
+ext_rtp_ip=172.16.14.225    <- your LAN IP, so the SBC can reach the media
+ext_sip_ip=172.18.0.2       <- the container IP, where sofia actually listens
+```
 
-**Symptom:** `claude-phone api-server` fails immediately.
+If `ext_sip_ip` is your LAN IP or `127.0.0.1`, drachtio dials a port with nothing
+behind it. `docker/entrypoint.sh` computes the container IP at runtime; confirm
+it ran:
 
-**Solutions:**
-1. Check port 3333 isn't already in use:
-   ```bash
-   lsof -i :3333
-   ```
+```
+[bootstrap] FreeSWITCH SIP will advertise 172.18.0.2; RTP will advertise 172.16.14.225
+```
 
-2. Verify Claude Code CLI works:
-   ```bash
-   claude --version
-   ```
+---
 
-3. Check for Node.js errors in output
+## Call connects but there is no audio at all
 
-## Getting Logs
+**Symptom:** the call is up, no greeting, and nothing you say registers.
 
-### Voice App Logs
+**Check the SDP** that FreeSWITCH sent back:
+
 ```bash
-claude-phone logs voice-app
-# or
-docker compose logs -f voice-app
+docker logs claude-phone 2>&1 | grep "c=IN IP4"
 ```
 
-### SIP Server Logs
+- `c=IN IP4 172.16.14.225` (your LAN IP) — correct.
+- `c=IN IP4 172.18.0.x` (a Docker IP) — **broken**. The SBC is a native Windows
+  process and cannot route to the Docker bridge, so RTP dies in both directions.
+
+**Cause.** FreeSWITCH's `nat.auto` ACL treats `172.16.0.0/12` as "local". Your
+LAN (`172.16.x`) *and* the Docker bridge (`172.18.x`) both fall inside that
+range, so FreeSWITCH decides the SBC is local and skips external-IP
+substitution.
+
+**Fix** — applied at build time in the `Dockerfile`; verify it stuck:
+
 ```bash
-claude-phone logs drachtio
-# or
-docker compose logs -f drachtio
+docker exec claude-phone grep -E "local-network-acl|apply-nat-acl" \
+  /usr/local/freeswitch/conf/sip_profiles/mrf.xml
 ```
 
-### Media Server Logs
+You want `local-network-acl = none` present and **no** `apply-nat-acl` line.
+
+Also confirm the RTP ports are published: `30000-30100/udp` in
+`docker-compose.yml`.
+
+---
+
+## Greeting plays, then nothing — she never answers
+
+**Symptom:** you hear the greeting and the beep, you speak, and nothing happens
+until the call times out.
+
+**Log — the tell:**
+```
+LISTEN Got: … bytes
+(no "Finalizing utterance" line ever appears)
+```
+
+or
+
+```
+VAD: isSpeech=true, inSpeech=true, silenceMs=0, RMS=1800, floor=…
+```
+repeating, with `silenceMs` never rising.
+
+**Cause.** The VAD never sees end-of-speech. Fixed thresholds assume the line
+goes to digital silence (RMS 0) between words. Through a PBX/SBC the gaps carry
+a **noise floor of roughly RMS 1000–2500**, which sits above a fixed threshold,
+so every frame classifies as speech and the utterance is never finalized.
+
+**Fix.** The VAD learns the floor as a rolling 20th percentile and requires
+speech to exceed it by `VAD_NOISE_MULT`. If it still misbehaves, read the
+`floor=` value in the logs and adjust:
+
 ```bash
-claude-phone logs freeswitch
-# or
-docker compose logs -f freeswitch
+VAD_NOISE_MULT=3.0     # she keeps "hearing" your noise floor -> raise
+VAD_NOISE_MULT=1.8     # she misses quiet speech -> lower
 ```
 
-### API Server Logs
+> An EMA that only updates on "silent" frames **cannot** fix this: if the floor
+> already exceeds the threshold, no frame is ever classified silent, so the floor
+> never updates. The measurement must not depend on the decision it feeds.
+
+---
+
+## Answers are slow (30–60s of dead air)
+
+Break the delay down from the timestamps:
+
 ```bash
-# If running in foreground, check terminal output
-# If running via start command, check:
-cat ~/.claude-phone/api-server.log
+docker logs claude-phone 2>&1 | grep -E "LISTEN Got|WHISPER |CLAUDE Query|VOICE:"
 ```
 
-## Still Stuck?
+| Stage | Healthy | If it is slower |
+|---|---|---|
+| `LISTEN Got` → `WHISPER` | 4s (`small`) / 14s (`medium`) | drop `WHISPER_MODEL` to `small` |
+| `CLAUDE Query` → `VOICE:` | 20–45s | see below |
 
-1. **Check the video tutorial:** [youtu.be/cT22fTzotYc](https://youtu.be/cT22fTzotYc) covers common setup issues
-2. **Run full diagnostics:** `claude-phone doctor`
-3. **Open an issue:** [github.com/masterdeepak15/claude-phone-local/issues](https://github.com/masterdeepak15/claude-phone-local/issues)
+**The big one: MCP startup.** Every turn spawns a fresh `claude` process. Without
+`--strict-mcp-config` it first connects to *every* configured MCP server —
+including remote HTTP ones needing auth, which simply time out. That added ~30s
+to every answer.
 
-When opening an issue, include:
-- Output of `claude-phone doctor`
-- Output of `claude-phone status`
-- Relevant log snippets (redact any API keys!)
-- Your deployment type (All-in-one or Split)
-- Platform (macOS, Linux, Raspberry Pi)
+This is on by default now. To confirm the flag is present:
+
+```bash
+grep -n "strict-mcp-config" claude-api-server/server.js
+```
+
+Set `PHONE_ENABLE_MCP=1` only if you deliberately want MCP tools by phone, and
+accept the latency.
+
+**Diagnostic trick:** send a deliberately invalid request. If it fails in ~1s
+while a valid one takes 60s, the gap is process startup (MCP), not reasoning.
+
+---
+
+## She says she cannot check your PC
+
+**Symptom:** *"I'm running on the server side, not your computer."* — untrue. She
+runs as Claude Code **on your PC** with full shell access.
+
+**Fix.** The device prompt must tell her so. In `data/config/devices.json`:
+
+```json
+"prompt": "You are Maya… You are running as Claude Code directly on the user's
+Windows PC, with full shell and file access. When asked about their PC, actually
+RUN a command and report the real result. Never say you cannot check."
+```
+
+Restart the container (config is a volume, no rebuild needed):
+```bash
+docker compose restart claude-phone
+```
+
+---
+
+## Container restart-loops immediately
+
+**Log:**
+```
+/usr/bin/env: 'bash\r': No such file or directory
+```
+
+**Cause.** CRLF line endings — a Windows checkout or a Windows editor saved
+`docker/entrypoint.sh` with `\r\n`, making the shebang `bash\r`.
+
+**Fix.** The `Dockerfile` strips CR at build time and `.gitattributes` forces LF.
+If you hit it anyway:
+
+```bash
+sed -i 's/\r$//' docker/entrypoint.sh docker/supervisord.conf
+docker compose build && docker compose up -d
+```
+
+---
+
+## SIP registration fails
+
+**403 Invalid credentials** — you are registering against the wrong host. Send
+REGISTER to the **local SBC**, not the cloud tenant:
+
+```
+SIP_DOMAIN=1752.3cx.cloud      # identity, used in From/To
+SIP_REGISTRAR=172.16.14.225    # where REGISTER actually goes (the local SBC)
+```
+
+**Port 5060 already in use** — the 3CX SBC owns it. drachtio uses **5070**; keep
+`DRACHTIO_SIP_PORT=5070` and the matching published port.
+
+Verify registration:
+```bash
+docker logs claude-phone 2>&1 | grep MULTI-REGISTRAR
+# [MULTI-REGISTRAR] Maya SUCCESS - Registered as ext 17512
+```
+
+---
+
+## Models re-download on every restart
+
+`./data` is not persisting. A healthy restart logs:
+
+```
+[bootstrap] voice en_US-lessac-medium already present
+[bootstrap] whisper model cached
+[bootstrap] devices.json already present (left untouched)
+```
+
+Check the bind mount is `./data:/data` in `docker-compose.yml`, that `data/` is
+in `.gitignore`, and that Docker Desktop has file sharing enabled for the drive.
+
+---
+
+## Wrong language, or garbled Hindi/Marathi
+
+```bash
+docker logs claude-phone 2>&1 | grep "WHISPER \["
+# WHISPER [hi -> voice hi_IN-priyamvada-medium]: "…"
+```
+
+- **Wrong language detected** — pin it: `STT_LANGUAGE=hi` (or `mr`, `en`).
+- **Right language, garbled words** — `WHISPER_MODEL=medium` at minimum.
+  Marathi is the weakest of the three; `large-v3` helps but is ~3 GB and much
+  slower per turn on CPU.
+- **Correct text, wrong voice** — check `LANG_VOICE_MAP` and that the model
+  exists: `curl http://127.0.0.1:9002/voices`.
+
+---
+
+## She talks over me / I cannot interrupt her
+
+Barge-in is deliberately hard to trigger so a cough or echo cannot cut her off.
+
+```bash
+docker logs claude-phone 2>&1 | grep "BARGE-IN"
+```
+
+- **Never triggers** — lower `BARGE_MULT` (1.6 → 1.3) or `BARGE_MIN_MS` (320 → 200).
+- **Triggers on its own** — raise them. If it fires while *she* is speaking, the
+  audio fork is carrying her own audio back; confirm `mixType: 'mono'` in
+  `sip-handler.js`.
+
+---
+
+## Falling back to the old layout
+
+The previous five-container setup is preserved and still works:
+
+```bash
+docker compose down
+docker compose -f docker-compose.multi.yml up -d
+```
+
+Note it needs the container-DNS env values (`DRACHTIO_HOST=drachtio`,
+`FREESWITCH_HOST=freeswitch`, `AUDIO_BASE_URL=http://voice-app:3000`), which the
+unified `docker-compose.yml` overrides to `127.0.0.1`.

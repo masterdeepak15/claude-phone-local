@@ -1,0 +1,105 @@
+version: '3.8'
+
+# WINDOWS + DOCKER DESKTOP NOTE:
+# Docker Desktop cannot do real host networking on Windows (containers run
+# inside a hidden VM), so this compose file uses a normal bridge network
+# with explicit published ports instead of `network_mode: host`.
+# Containers talk to each other by service name (drachtio, freeswitch,
+# voice-app, stt-local, tts-local) over the `claude-phone` network below.
+#
+# EXTERNAL_IP in your .env must be this PC's LAN IP (run `ipconfig`,
+# use the IPv4 address of your active network adapter) -- that's the IP
+# 3CX needs to send SIP/RTP to, and it must be reachable from your 3CX side.
+
+networks:
+  claude-phone:
+    driver: bridge
+
+services:
+  drachtio:
+    image: drachtio/drachtio-server:latest
+    container_name: drachtio
+    restart: unless-stopped
+    networks:
+      - claude-phone
+    ports:
+      - "5070:5070/udp"
+      - "5070:5070/tcp"
+    command: >
+      drachtio
+      --contact "sip:*:5070;transport=tcp,udp"
+      --external-ip ${EXTERNAL_IP}
+      --secret ${DRACHTIO_SECRET:-cymru}
+      --port 9022
+      --loglevel info
+
+  freeswitch:
+    image: drachtio/drachtio-freeswitch-mrf:latest
+    container_name: freeswitch
+    restart: unless-stopped
+    networks:
+      - claude-phone
+    ports:
+      - "30000-30100:30000-30100/udp"
+      - "5080:5080/udp"
+      - "5080:5080/tcp"
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "sed -i '/apply-nat-acl/d' /usr/local/freeswitch/conf/sip_profiles/mrf.xml &&
+      sed -i '/<param name=\"ext-sip-ip\"/a\\      <param name=\"local-network-acl\" value=\"none\"/>' /usr/local/freeswitch/conf/sip_profiles/mrf.xml &&
+      exec /entrypoint.sh freeswitch
+      --sip-port 5080
+      --rtp-range-start 30000
+      --rtp-range-end 30100
+      --ext-rtp-ip ${EXTERNAL_IP}
+      --ext-sip-ip ${EXTERNAL_IP}
+      --advertise-external-ip"
+    environment:
+      - EXTERNAL_IP=${EXTERNAL_IP}
+
+  voice-app:
+    build: ./voice-app
+    container_name: voice-app
+    restart: unless-stopped
+    networks:
+      - claude-phone
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    env_file:
+      - .env
+    volumes:
+      - ./voice-app/audio:/app/audio
+      - ./voice-app/config:/app/config
+    depends_on:
+      - drachtio
+      - freeswitch
+
+  stt-local:
+    build: ./stt-local
+    container_name: stt-local
+    restart: unless-stopped
+    networks:
+      - claude-phone
+    ports:
+      - "127.0.0.1:9001:9001"   # localhost-only, so `claude-phone doctor` can health-check it from the host
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-small}
+    volumes:
+      - stt-model-cache:/root/.cache/huggingface
+
+  tts-local:
+    build: ./tts-local
+    container_name: tts-local
+    restart: unless-stopped
+    networks:
+      - claude-phone
+    ports:
+      - "127.0.0.1:9002:9002"   # localhost-only, so `claude-phone doctor` can health-check it from the host
+    environment:
+      - PIPER_VOICE=${PIPER_VOICE:-en_US-lessac-medium}
+    volumes:
+      - ./tts-local/voices:/voices
+
+volumes:
+  stt-model-cache:

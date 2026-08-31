@@ -56,16 +56,26 @@ async function initiateOutboundCall(srf, mediaServer, options) {
     // Remove '+' from E.164 format for SIP URI
     // Internal extensions: dial as-is. External (E.164 with +): add 9 prefix for PSTN
     const isExternal = to.startsWith('+');
-    const phoneNumber = isExternal ? '9' + to.replace(/^\+1?/, '') : to;
-    const sipTrunkHost = process.env.SIP_TRUNK_HOST || '10.70.7.50';
+    // Upstream hardcoded a '9' outdial prefix for their PBX. Most systems do not
+    // use one, so it defaults to empty and is configurable.
+    const outdialPrefix = process.env.SIP_OUTDIAL_PREFIX || '';
+    const phoneNumber = isExternal ? outdialPrefix + to.replace(/^\+1?/, '') : to;
+    // Falls back to the registrar (the local SBC) rather than a hardcoded IP from
+    // someone else's network, which silently broke every outbound call.
+    const sipTrunkHost = process.env.SIP_TRUNK_HOST || process.env.SIP_REGISTRAR || '127.0.0.1';
     const externalIp = process.env.EXTERNAL_IP || '10.70.7.81';
     const defaultCallerId = callerId || process.env.DEFAULT_CALLER_ID || '+15551234567';
 
     // SIP Authentication for 3CX extension registration
-    const sipAuthUsername = process.env.SIP_AUTH_USERNAME;
-    const sipAuthPassword = process.env.SIP_AUTH_PASSWORD;
+    // .env defines SIP_AUTH_ID / SIP_PASSWORD; the old names here never matched,
+    // so outbound calls went out unauthenticated and 3CX rejected them.
+    const sipAuthUsername = process.env.SIP_AUTH_USERNAME || process.env.SIP_AUTH_ID;
+    const sipAuthPassword = process.env.SIP_AUTH_PASSWORD || process.env.SIP_PASSWORD;
 
-    const sipUri = 'sip:' + phoneNumber + '@' + sipTrunkHost;
+    // Without an explicit transport drachtio dials TCP, but the 3CX SBC listens on
+    // UDP 5060 - which surfaces as "Connection refused ... tcp/<sbc>:5060" and a 503.
+    const trunkTransport = process.env.SIP_TRUNK_TRANSPORT || 'udp';
+    const sipUri = 'sip:' + phoneNumber + '@' + sipTrunkHost + ';transport=' + trunkTransport;
 
     logger.info('Dialing SIP URI', {
       callId,

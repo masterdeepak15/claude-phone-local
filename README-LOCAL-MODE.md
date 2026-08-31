@@ -1,158 +1,147 @@
-# Claude Phone Local
+# Windows + 3CX setup
 
-Call a phone number (via 3CX) and talk to your local Claude Code CLI —
-entirely offline for speech: local **faster-whisper** for speech-to-text,
-local **Piper** for text-to-speech. No OpenAI or ElevenLabs API keys.
+Platform specifics for running claude-phone-local on a Windows PC with Docker
+Desktop and a native 3CX SBC. For the general quickstart see
+[README.md](README.md).
 
-## Features
+> Most of what used to live here — downloading Piper voices, fetching the
+> Whisper model, hand-writing `devices.json` — is now automatic on first run.
+> What remains is the part only you can do: networking and 3CX.
 
-| Feature | Status |
-|---|---|
-| Inbound calls (call extension, talk to Claude) | ✅ |
-| Outbound calls (Claude calls you) | ✅ (`voice-app/lib/outbound-*.js`) |
-| Split deployment (Pi voice-server + main-PC API-server) | ✅ |
-| Full `claude-phone` CLI (setup/start/stop/status/doctor/logs/backup/restore/update/uninstall) | ✅ |
-| Multi-device / multi-extension personalities | ✅, voice field takes a Piper voice name in local mode |
-| `/api/outbound-call`, `/api/query`, `/api/devices`, `/ask-structured` (n8n) | ✅ |
-| Claude Code Skill (`docs/CLAUDE-CODE-SKILL.md`) | ✅ |
-| Text-to-speech | local **Piper** by default, no API key (opt-in `TTS_MODE=cloud` for ElevenLabs) |
-| Speech-to-text | local **faster-whisper** by default, no API key (opt-in `STT_MODE=cloud` for OpenAI) |
+## Why the container cannot use host networking
 
-## How local speech works
+Docker Desktop on Windows runs containers inside a hidden VM, so
+`network_mode: host` does not give you the host's interfaces. The compose file
+uses a bridge network with published ports instead.
 
-- `voice-app/lib/whisper-client.js` calls a local `stt-local` sidecar
-  (faster-whisper) by default instead of a cloud API.
-- `voice-app/lib/tts-service.js` calls a local `tts-local` sidecar (Piper)
-  by default instead of a cloud API.
-- Both sidecars are plain FastAPI services (`stt-local/`, `tts-local/`),
-  built and run by `docker-compose.yml` alongside `drachtio`, `freeswitch`,
-  and `voice-app`.
-- `cli/lib/commands/setup.js` asks "local or cloud" up front; local mode
-  skips the ElevenLabs/OpenAI key prompts entirely and auto-downloads the
-  chosen Piper voice.
-- `cli/lib/commands/doctor.js` health-checks the local sidecars instead of
-  cloud APIs when in local mode.
+The consequence that matters: **FreeSWITCH must be told your LAN IP explicitly**,
+because it cannot see it. That is what `EXTERNAL_IP` is for.
 
-`sip-handler.js`, `conversation-loop.js`, `audio-fork.js`, `registrar.js`,
-`multi-registrar.js`, `outbound-handler.js`, `outbound-session.js`,
-`outbound-routes.js`, `query-routes.js`, `device-registry.js`,
-`http-server.js`, and `claude-api-server/` all just talk to
-`whisperClient`/`ttsService` through the functions above, so local vs.
-cloud speech is invisible to them.
+## 1. Find your LAN IP
 
-## Setup — Windows PC with Docker Desktop + WSL2, all-in-one
-
-This is the setup this project is configured for by default.
-`docker-compose.yml` already uses a normal Docker Desktop bridge network
-with explicit published ports instead of `network_mode: host` (which Docker
-Desktop can't do on Windows) — you don't need to touch WSL2's own Docker
-engine at all.
-
-### 1. Find your PC's LAN IP
-
-Open PowerShell:
 ```powershell
 ipconfig
 ```
-Note the **IPv4 Address** of your active adapter (Wi-Fi or Ethernet) —
-something like `192.168.1.50`. This is your `EXTERNAL_IP` — it's the address
-3CX needs to send SIP/RTP traffic to.
 
-### 2. Get the project into WSL2
-
-Open your WSL2 Ubuntu terminal (Docker Desktop → Settings → Resources → WSL
-Integration → make sure it's enabled for your distro):
+Take the IPv4 address of your active adapter — for example `172.16.14.225`. Put
+it in `.env`:
 
 ```bash
-cd ~
-# copy/extract this project here, e.g.:
-unzip /mnt/c/Users/<you>/Downloads/claude-phone-local-full.zip -d ~/
-cd ~/claude-phone-local-full
-cp .env.example .env
+EXTERNAL_IP=172.16.14.225
 ```
-Edit `.env` and set `EXTERNAL_IP` to the IP from step 1.
 
-Working from inside the WSL2 filesystem (`~/...`, not `/mnt/c/...`) is
-important for Docker build speed and file-watching reliability.
+If this is wrong, calls connect but carry no audio.
 
-### 3. Install the CLI and run setup
+## 2. Port 5060 belongs to the SBC
+
+If the 3CX SBC runs on this same PC it already owns UDP 5060, so drachtio uses
+**5070**:
 
 ```bash
-npm install -g ./cli
-claude-phone setup
+DRACHTIO_SIP_PORT=5070
 ```
-Wizard choices:
-- Installation type → **Both** (single machine)
-- STT/TTS → **Local (offline, no API keys)**
-- 3CX domain / registrar → your 3CX FQDN
-- Extension number/password → the extension you created in 3CX admin console
 
-### 4. Get a Piper voice
+This is already the default. Point the 3CX extension at `<your-ip>:5070`.
+
+## 3. Register against the local SBC, not the cloud
+
+This trips people up. `SIP_DOMAIN` is your *identity*; `SIP_REGISTRAR` is where
+REGISTER is actually sent — the SBC on your LAN:
 
 ```bash
-mkdir -p tts-local/voices
-curl -L -o tts-local/voices/en_US-lessac-medium.onnx \
-  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
-curl -L -o tts-local/voices/en_US-lessac-medium.onnx.json \
-  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+SIP_DOMAIN=1752.3cx.cloud       # identity, appears in From/To
+SIP_REGISTRAR=172.16.14.225     # the local SBC
+SIP_REGISTRAR_PORT=5060
 ```
 
-### 5. Windows Firewall
+Registering straight against the cloud domain returns **403 Invalid credentials**.
 
-Allow inbound on the ports 3CX needs to reach, from PowerShell **as
-Administrator**:
+## 4. Windows Firewall
+
+Allow inbound on the ports Docker publishes:
+
 ```powershell
-New-NetFirewallRule -DisplayName "ClaudePhone SIP" -Direction Inbound -Protocol UDP -LocalPort 5060 -Action Allow
-New-NetFirewallRule -DisplayName "ClaudePhone SIP-TCP" -Direction Inbound -Protocol TCP -LocalPort 5060 -Action Allow
-New-NetFirewallRule -DisplayName "ClaudePhone RTP" -Direction Inbound -Protocol UDP -LocalPort 30000-30100 -Action Allow
+New-NetFirewallRule -DisplayName "claude-phone SIP" -Direction Inbound `
+  -Protocol UDP -LocalPort 5070 -Action Allow
+New-NetFirewallRule -DisplayName "claude-phone RTP" -Direction Inbound `
+  -Protocol UDP -LocalPort 30000-30100 -Action Allow
 ```
 
-### 6. Start it
+RTP uses **30000–30100** deliberately — the 3CX SBC uses 20000–20099, and
+overlapping them breaks audio.
+
+## 5. 3CX extension
+
+Create a SIP extension and copy its credentials into `.env`:
 
 ```bash
-claude-phone start
-claude-phone doctor     # confirms Docker, drachtio, freeswitch, local STT, local TTS all green
-claude-phone logs       # watch for "READY Voice interface is fully connected!"
+SIP_EXTENSION=17512
+SIP_AUTH_ID=<authentication id>
+SIP_PASSWORD=<authentication password>
 ```
 
-### 7. Point 3CX at it
+On first run these become `data/config/devices.json`. **That file holds live
+credentials and is gitignored — never commit it.**
 
-In the 3CX admin console, on the extension: set the extension's registration
-target/NAT to your PC's LAN IP from step 1, and make sure its allowed media
-port range matches `30000-30100`. Call the extension — it should answer and
-you'll be talking to your local Claude Code CLI, fully offline for
-speech-to-text and text-to-speech.
-
-### Download a Piper voice (one-time)
+## 6. Start
 
 ```bash
-mkdir -p tts-local/voices
-curl -L -o tts-local/voices/en_US-lessac-medium.onnx \
-  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
-curl -L -o tts-local/voices/en_US-lessac-medium.onnx.json \
-  https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+docker compose up -d --build
+docker compose logs -f
 ```
 
-Want a different voice? Browse
-[huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices)
-and drop the matching `.onnx` + `.onnx.json` pair in `tts-local/voices/`,
-then reference that name as the device's "voice" in `claude-phone device add`.
+First run downloads ~2 GB (Whisper model + three Piper voices) into `./data`.
+Later starts reuse them and come up in well under a minute:
 
-### faster-whisper model
+```
+[bootstrap] voice en_US-lessac-medium already present
+[bootstrap] whisper model cached
+[MULTI-REGISTRAR] Maya SUCCESS - Registered as ext 17512
+```
 
-Downloads automatically on first `stt-local` container start (cached in the
-`stt-model-cache` Docker volume, so it only happens once). Pick the size
-during `claude-phone setup` — `tiny`/`base` are fastest, `small`/`medium`
-are more accurate but slower on CPU.
+Then start the host-side wrapper:
 
-### 3CX + Claude Code CLI
+```bash
+cd claude-api-server
+CLAUDE_MODEL=claude-sonnet-5 node server.js
+```
 
-Create your extension in the 3CX admin console, and make sure `claude`
-(Claude Code CLI) is already logged in on whichever machine runs
-`claude-api-server`.
+## How local speech works
 
-## More docs
+| | Local (default) | Cloud (opt-in) |
+|---|---|---|
+| STT | faster-whisper in-container | OpenAI Whisper (`STT_MODE=cloud`) |
+| TTS | Piper in-container | ElevenLabs (`TTS_MODE=cloud`) |
+| Keys | none | API keys required |
+| Data | never leaves the PC | sent to the provider |
 
-Full CLI reference, troubleshooting guide, and outbound API reference:
-`README.md`, `docs/TROUBLESHOOTING.md`, `voice-app/README-OUTBOUND.md`, and
-`docs/CLAUDE-CODE-SKILL.md`.
+Both sidecars listen on loopback inside the container (`9001` STT, `9002` TTS)
+and are also published to `127.0.0.1` on the host so `claude-phone doctor` can
+health-check them.
+
+## Windows gotchas
+
+**CRLF line endings.** If the container restart-loops with
+`/usr/bin/env: 'bash\r': No such file or directory`, a Windows editor saved a
+shell script with `\r\n`. The Dockerfile strips CR at build time and
+`.gitattributes` forces LF, but if you hit it:
+
+```bash
+sed -i 's/\r$//' docker/entrypoint.sh docker/supervisord.conf
+docker compose build
+```
+
+**Docker file sharing.** The `./data` bind mount needs the drive shared in
+Docker Desktop → Settings → Resources → File Sharing, or models re-download
+every start.
+
+**`host.docker.internal`** is how the container reaches `claude-api-server` on
+the host. It is Docker Desktop-specific; on native Linux Docker use the bridge
+gateway or host networking instead.
+
+## More
+
+- [README.md](README.md) — quickstart
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — failure modes
+- [docs/LANGUAGES.md](docs/LANGUAGES.md) — Hindi/Marathi
+- [CLAUDE.md](CLAUDE.md) — architecture

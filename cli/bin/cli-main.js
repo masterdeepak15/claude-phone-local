@@ -17,6 +17,8 @@ import { updateCommand } from '../lib/commands/update.js';
 import { backupCommand } from '../lib/commands/backup.js';
 import { restoreCommand } from '../lib/commands/restore.js';
 import { uninstallCommand } from '../lib/commands/uninstall.js';
+import { registerMcpServerWithOutput, mcpServerPath } from '../lib/mcp-register.js';
+import { loadConfig as _loadCfgForMcp } from '../lib/config.js';
 
 const program = new Command();
 
@@ -105,6 +107,33 @@ program
   });
 
 // Device management subcommands
+const mcp = program
+  .command('mcp')
+  .description('Manage the MCP server that lets Claude Code call you');
+
+mcp
+  .command('install')
+  .description('Register the MCP server with Claude Code')
+  .option('-t, --to <number>', 'Extension or number Claude should ring')
+  .option('-f, --force', 'Re-register even if already present')
+  .action(async (options) => {
+    let cfg = {};
+    try { cfg = await _loadCfgForMcp(); } catch { /* not set up yet - fine */ }
+    const firstDevice = cfg.devices && Object.keys(cfg.devices).length
+      ? Object.values(cfg.devices)[0]
+      : null;
+    registerMcpServerWithOutput({
+      defaultTo: options.to || cfg.sip?.callbackNumber || firstDevice?.extension || cfg.sip?.extension,
+      httpPort: cfg.server?.httpPort || 3000,
+      force: !!options.force,
+    });
+  });
+
+mcp
+  .command('path')
+  .description('Print the MCP server path (for manual registration)')
+  .action(() => console.log(mcpServerPath()));
+
 const device = program
   .command('device')
   .description('Manage SIP devices');

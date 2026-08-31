@@ -1,7 +1,7 @@
 {
   "name": "claude-phone-local",
-  "version": "1.0.0",
-  "description": "Talk to your local Claude Code CLI over the phone via 3CX -- no OpenAI/ElevenLabs API keys needed (local faster-whisper STT + Piper TTS).",
+  "version": "2.0.0",
+  "description": "Talk to your local Claude Code CLI over the phone via 3CX/SIP. Fully offline speech (faster-whisper STT + Piper TTS) in a single Docker container -- no OpenAI or ElevenLabs API keys needed.",
   "type": "module",
   "bin": {
     "claude-phone": "./cli/bin/claude-phone.js"
@@ -14,14 +14,23 @@
     "claude-api-server",
     "stt-local",
     "tts-local",
+    "Dockerfile",
+    "mcp-server",
+    "docker",
     "docker-compose.yml",
     ".env.example",
     "README.md",
-    "README-LOCAL-MODE.md",
-    "docs"
+    "docs",
+    "!voice-app/config/devices.json",
+    "!voice-app/audio/**",
+    "!voice-app/audio-temp/**",
+    "!tts-local/voices/**",
+    "!**/.env",
+    "!mcp-server/node_modules/**"
   ],
   "scripts": {
-    "postinstall": "node ./cli/bin/postinstall.js || true"
+    "postinstall": "node ./cli/bin/postinstall.js || true",
+    "prepublishOnly": "node ./cli/bin/check-publish-safety.js"
   },
   "keywords": [
     "claude",
@@ -33,7 +42,13 @@
     "whisper",
     "piper",
     "offline",
-    "self-hosted"
+    "self-hosted",
+    "hindi",
+    "marathi",
+    "multilingual",
+    "voip",
+    "freeswitch",
+    "drachtio"
   ],
   "author": "",
   "license": "MIT",
@@ -42,12 +57,17 @@
     "inquirer": "^9.2.15",
     "chalk": "^5.3.0",
     "ora": "^8.0.1",
-    "axios": "^1.6.7"
+    "axios": "^1.6.7",
+    "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theNetworkChuck/claude-phone.git"
   }
 }

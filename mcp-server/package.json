@@ -1,0 +1,9 @@
+{
+  "name": "claude-phone-mcp",
+  "version": "1.0.0",
+  "description": "MCP server letting a Claude Code session phone the user and talk it through.",
+  "type": "module",
+  "bin": {
+    "claude-phone-mcp": "./index.js"
+  }
+}

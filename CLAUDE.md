@@ -1,246 +1,181 @@
-# Claude Phone
+# Claude Phone (Local)
 
-Voice interface for Claude Code via SIP/3CX. Call your AI, and your AI can call you.
+Voice interface for Claude Code over SIP/3CX, with **fully offline speech**.
+Call your AI; your AI can call you.
 
-## Project Overview
+Fork of [theNetworkChuck/claude-phone](https://github.com/theNetworkChuck/claude-phone) —
+see [Credits](README.md#credits).
 
-Claude Phone gives your Claude Code installation a phone number through 3CX PBX integration:
-- **Inbound**: Call an extension and talk to Claude - run commands, check status, ask questions
-- **Outbound**: Your server can call YOU with alerts, then have a conversation about what to do
+## What this fork changes
 
-## Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Language | Node.js (ES modules for CLI, CommonJS for voice-app) |
-| SIP Server | drachtio-srf |
-| Media Server | FreeSWITCH (via drachtio-fsmrf) |
-| STT | faster-whisper (local, default) or OpenAI Whisper API (opt-in cloud) |
-| TTS | Piper (local, default) or ElevenLabs API (opt-in cloud) |
-| AI Backend | Claude Code CLI (via HTTP wrapper) |
-| PBX | 3CX (any SIP-compatible works) |
-| Container | Docker Compose |
+| Area | Upstream | Here |
+|------|----------|------|
+| STT | OpenAI Whisper API | faster-whisper, local, no key |
+| TTS | ElevenLabs API | Piper, local, no key |
+| Languages | English | English + Hindi + Marathi, auto-detected |
+| Containers | 5 services | **1 container** (supervisord) |
+| State | — | `./data` volume, survives restarts |
+| Interruption | — | barge-in: talk over her and she stops |
+| Outbound | HTTP API | HTTP API **+ MCP server** |
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Phone Call                                                  │
-│      │                                                       │
-│      ↓ Call extension 9000                                  │
-│  ┌─────────────┐                                            │
-│  │     3CX     │  ← PBX routes the call                    │
-│  └──────┬──────┘                                            │
-│         │ SIP                                               │
-│         ↓                                                    │
-│  ┌─────────────────────────────────────────────────┐       │
-│  │           voice-app (Docker)                     │       │
-│  │  ┌─────────────────────────────────────────┐   │       │
-│  │  │ drachtio  │  FreeSWITCH  │  Node.js     │   │       │
-│  │  │ (SIP)     │  (Media)     │  (Logic)     │   │       │
-│  │  └─────────────────────────────────────────┘   │       │
-│  └────────────────────┬────────────────────────────┘       │
-│                       │ HTTP                                │
-│                       ↓                                      │
-│  ┌─────────────────────────────────────────────────┐       │
-│  │   claude-api-server                              │       │
-│  │   Wraps Claude Code CLI with session management │       │
-│  └─────────────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Directory Structure
+Two processes, one boundary.
 
 ```
-claude-phone/
-├── CLAUDE.md                 # This file
-├── CONSTITUTION.md           # DevFlow 2.0 development principles
-├── README.md                 # User-facing documentation
-├── install.sh                # One-command installer
-├── package.json              # Root package (hooks, linting, tests)
-├── eslint.config.js          # ESLint configuration
-├── docker-compose.yml        # Multi-container orchestration
-├── .env.example              # Environment template
+Phone → 3CX cloud → 3CX SBC (HOST :5060)
+                      │  published port
+        ┌─────────────▼───────────────────────────┐
+        │  claude-phone container (supervisord)   │
+        │                                         │
+        │  drachtio       :5070   SIP             │
+        │  FreeSWITCH     :5080   media           │
+        │                 :30000-30100  RTP       │
+        │  voice-app      :3000   call logic      │
+        │                 :3001   audio WebSocket │
+        │  faster-whisper :9001   STT  (loopback) │
+        │  Piper          :9002   TTS  (loopback) │
+        └─────────────┬───────────────────────────┘
+                      │ host.docker.internal:3333
+                      ▼
+        claude-api-server (HOST) → claude.exe (HOST)
+```
+
+**Everything inside the container talks over 127.0.0.1.** There is no container
+DNS to misconfigure — that was the single largest source of bugs in the old
+five-container layout.
+
+### The two IPs that matter
+
+FreeSWITCH must advertise **different addresses for signalling and media**:
+
+| Channel | Address | Why |
+|---|---|---|
+| SIP (`ext-sip-ip`) | container IP, e.g. `172.18.0.2` | drachtio shares the network namespace; FreeSWITCH binds sofia to the container IP, never loopback |
+| RTP (`ext-rtp-ip`) | `EXTERNAL_IP` — the PC's LAN IP | the 3CX SBC is a native Windows process and must reach the media |
+
+Getting either wrong gives a `503` (SIP) or a connected call with no audio (RTP).
+The container IP is computed at runtime in `docker/entrypoint.sh`.
+
+## Tech stack
+
+| Component | Technology |
+|-----------|------------|
+| Language | Node.js (CommonJS in voice-app, ESM in cli/mcp-server) |
+| SIP | drachtio-srf |
+| Media | FreeSWITCH via drachtio-fsmrf |
+| STT | faster-whisper (local) or OpenAI (`STT_MODE=cloud`) |
+| TTS | Piper (local) or ElevenLabs (`TTS_MODE=cloud`) |
+| Backend | Claude Code CLI via HTTP wrapper |
+| Container | Docker Compose, single image |
+
+## Directory structure
+
+```
+claude-phone-local/
+├── Dockerfile                  # the single unified image
+├── docker-compose.yml          # one service, ./data volume
+├── docker-compose.multi.yml    # previous 5-container layout (fallback)
+├── docker/
+│   ├── entrypoint.sh           # bootstrap: models, config, then supervisord
+│   └── supervisord.conf        # the five processes
 │
-├── .claude/commands/         # DevFlow slash commands
-│   ├── feature.md            # /feature spec|start|ship
-│   ├── test.md               # /test
-│   ├── fix.md                # /fix [N]
-│   ├── issues.md             # /issues
-│   ├── investigate.md        # /investigate
-│   ├── project.md            # /project
-│   ├── batch.md              # /batch
-│   └── design.md             # /design
+├── data/                       # gitignored, survives restarts
+│   ├── voices/                 # Piper models (auto-downloaded)
+│   ├── models/                 # Whisper cache (auto-downloaded)
+│   ├── config/devices.json     # SIP credentials — NEVER commit
+│   └── audio/                  # generated speech (scratch)
 │
-├── cli/                      # Unified CLI tool
-│   ├── package.json
-│   ├── README.md
-│   ├── bin/
-│   │   ├── claude-phone.js   # CLI entry point
-│   │   └── cli-main.js       # Command definitions
+├── voice-app/                  # call logic (runs in container)
 │   ├── lib/
-│   │   ├── commands/         # Command implementations
-│   │   │   ├── setup.js      # Interactive setup wizard
-│   │   │   ├── start.js      # Start services
-│   │   │   ├── stop.js       # Stop services
-│   │   │   ├── status.js     # Service status
-│   │   │   ├── doctor.js     # Health checks
-│   │   │   ├── api-server.js # Start API server standalone
-│   │   │   ├── logs.js       # Tail service logs
-│   │   │   ├── backup.js     # Create backups
-│   │   │   ├── restore.js    # Restore backups
-│   │   │   ├── update.js     # Self-update
-│   │   │   ├── uninstall.js  # Clean removal
-│   │   │   ├── config/       # Config subcommands
-│   │   │   │   ├── show.js
-│   │   │   │   ├── path.js
-│   │   │   │   └── reset.js
-│   │   │   └── device/       # Device subcommands
-│   │   │       ├── add.js
-│   │   │       ├── list.js
-│   │   │       └── remove.js
-│   │   ├── config.js         # Config read/write
-│   │   ├── docker.js         # Docker compose wrapper
-│   │   ├── network.js        # Network utilities
-│   │   ├── platform.js       # Platform detection
-│   │   ├── port-check.js     # Port availability checks
-│   │   ├── prereqs.js        # Prerequisite checks
-│   │   ├── prerequisites.js  # Pi-specific prereqs
-│   │   ├── process-manager.js# PID-based process management
-│   │   ├── utils.js          # Shared utilities
-│   │   └── validators.js     # API key validation
-│   └── test/                 # Test suite
+│   │   ├── sip-handler.js      # inbound calls + conversation loop
+│   │   ├── audio-fork.js       # WebSocket audio, VAD, barge-in
+│   │   ├── conversation-loop.js# shared loop (outbound)
+│   │   ├── whisper-client.js   # STT client, language detection
+│   │   ├── tts-service.js      # TTS client
+│   │   ├── claude-bridge.js    # HTTP client to claude-api-server
+│   │   ├── outbound-routes.js  # POST /api/outbound-call
+│   │   └── device-registry.js  # devices.json loader
+│   └── static/                 # beeps + hold music
 │
-├── voice-app/                # Docker container for voice handling
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── index.js              # Main entry point
-│   ├── config/
-│   │   └── devices.json      # Device configurations
-│   ├── lib/
-│   │   ├── audio-fork.js     # WebSocket audio streaming
-│   │   ├── claude-bridge.js  # HTTP client for Claude API
-│   │   ├── connection-retry.js # Connection retry logic
-│   │   ├── conversation-loop.js  # Core conversation flow
-│   │   ├── device-registry.js    # Multi-device management
-│   │   ├── http-server.js    # Express server for audio/API
-│   │   ├── logger.js         # Logging utility
-│   │   ├── multi-registrar.js    # Multi-extension SIP registration
-│   │   ├── outbound-handler.js   # Outbound call logic
-│   │   ├── outbound-routes.js    # Outbound API endpoints
-│   │   ├── outbound-session.js   # Outbound call sessions
-│   │   ├── query-routes.js   # Query API endpoints
-│   │   ├── registrar.js      # Single SIP registration
-│   │   ├── sip-handler.js    # Inbound call handling
-│   │   ├── tts-service.js    # Local Piper TTS (default) / ElevenLabs (opt-in cloud)
-│   │   └── whisper-client.js # Local faster-whisper STT (default) / OpenAI (opt-in cloud)
-│   ├── DEPLOYMENT.md         # Production deployment guide
-│   ├── README-OUTBOUND.md    # Outbound calling API docs
-│   └── API-QUERY-CONTRACT.md # Query API specification
-│
-├── claude-api-server/        # HTTP wrapper for Claude CLI
-│   ├── package.json
-│   ├── server.js             # Express server
-│   └── structured.js         # JSON validation helpers
-│
-├── docs/
-│   └── TROUBLESHOOTING.md    # Troubleshooting guide
-│
-└── src/features/             # DevFlow feature specs (planning docs)
-    └── */SPEC.md, PLAN.md, TASKS.md
+├── claude-api-server/          # runs on the HOST, wraps claude.exe
+├── mcp-server/                 # MCP: lets Claude Code phone the user
+├── stt-local/  tts-local/      # sidecar servers (baked into the image)
+├── cli/                        # claude-phone CLI
+└── docs/
 ```
 
-## CLI Commands
+## Commands
 
 ```bash
-# One-line install
-npm install -g claude-phone-local
+docker compose build && docker compose up -d   # build + run
+docker compose logs -f                         # follow logs
+docker compose down                            # stop
 
-# Setup and run
-claude-phone setup    # Interactive configuration
-claude-phone start    # Launch services
-claude-phone stop     # Stop services
-claude-phone status   # Check status
-claude-phone doctor   # Health checks
+# host-side Claude wrapper (must be running for answers)
+cd claude-api-server && CLAUDE_MODEL=claude-sonnet-5 node server.js
+
+# fall back to the old 5-container layout
+docker compose -f docker-compose.multi.yml up -d
 ```
 
-## Development
+## Key design decisions
 
-### Running Tests
+1. **One container, supervisord** — this is a single-user appliance, not a
+   scalable service. Loopback beats container DNS here.
+2. **`./data` bind mount** — models are ~2 GB; re-downloading on restart is
+   unacceptable. Bootstrap is idempotent and fetches only what is missing.
+3. **SIP and RTP advertise different IPs** — see above.
+4. **`local-network-acl = none`** in `mrf.xml` — FreeSWITCH's `nat.auto` treats
+   `172.16.0.0/12` as local, and both the LAN (`172.16.x`) and the Docker bridge
+   (`172.18.x`) fall inside it, so it skipped external-IP substitution and put the
+   container IP in the SDP. Patched at build time in the Dockerfile.
+5. **Adaptive VAD** — fixed thresholds assume digital silence between words. A PBX
+   line carries a noise floor (RMS 1000–2500) above any fixed threshold, so
+   end-of-speech never fired. The floor is learned as a rolling 20th percentile.
+6. **MCP disabled for phone queries** (`--strict-mcp-config`) — each turn spawns a
+   fresh CLI that would otherwise dial every configured MCP server, including
+   remote ones that time out. Cost ~30s per answer. Set `PHONE_ENABLE_MCP=1` to
+   re-enable.
+7. **Session per call** — `--session-id` on turn 1, `--resume` after, so one call
+   is one continuous Claude conversation.
+8. **CommonJS in voice-app** — drachtio ecosystem compatibility.
 
-```bash
-npm test              # All tests
-npm run test:cli      # CLI tests only
-npm run test:voice-app # Voice app tests only
-```
+## Security
 
-### Linting
+`claude-api-server` runs the CLI with `--dangerously-skip-permissions`: no
+prompts, all tools, full access to the host PC as your user, and your normal
+`~/.claude` config. Anyone who can reach it can run commands as you.
 
-```bash
-npm run lint          # Check for issues
-npm run lint:fix      # Auto-fix issues
-```
+- Keep port **3333 bound to localhost** — Docker Desktop still reaches it via
+  `host.docker.internal`.
+- **Never commit** `data/config/devices.json` or `.env` (both gitignored).
+- `prepublishOnly` blocks publishing if secrets or models would ship.
 
-### DevFlow Commands
+## Environment
 
-| Command | Purpose |
-|---------|---------|
-| `/feature spec [name]` | Create feature spec |
-| `/feature start [name]` | Build with TDD |
-| `/feature ship` | Review and merge |
-| `/test` | Run tests |
-| `/fix [N]` | Fix GitHub issue #N |
-| `/investigate [problem]` | Debug without changing code |
-
-## API Endpoints
-
-### Voice App (port 3000)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/api/outbound-call` | Initiate outbound call |
-| GET | `/api/call/:callId` | Get call status |
-| GET | `/api/calls` | List active calls |
-| POST | `/api/query` | Query device programmatically |
-| GET | `/api/devices` | List configured devices |
-
-### Claude API Server (port 3333)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/ask` | Send prompt to Claude |
-| POST | `/ask-structured` | Send prompt, return JSON |
-| POST | `/end-session` | Clean up session |
-| GET | `/health` | Health check |
-
-## Key Design Decisions
-
-1. **CommonJS for voice-app** - Compatibility with drachtio ecosystem
-2. **ES Modules for CLI** - Modern Node.js tooling
-3. **Host networking mode** - Required for FreeSWITCH RTP
-4. **Separate claude-api-server** - Runs where Claude Code CLI is installed
-5. **Session-per-call** - Each call gets Claude session for multi-turn context
-6. **RTP ports 30000-30100** - Avoids conflict with 3CX SBC (uses 20000-20099)
-7. **Config in ~/.claude-phone** - User config separate from codebase
-
-## Environment Variables
-
-See `.env.example` for all variables. Key ones:
+See `.env.example`. The ones that matter:
 
 | Variable | Purpose |
 |----------|---------|
-| `EXTERNAL_IP` | Server LAN IP for RTP routing |
-| `CLAUDE_API_URL` | URL to claude-api-server |
-| `ELEVENLABS_API_KEY` | TTS API key |
-| `OPENAI_API_KEY` | Whisper STT API key |
-| `SIP_DOMAIN` | 3CX server FQDN |
-| `SIP_REGISTRAR` | SIP registrar address |
+| `EXTERNAL_IP` | This PC's LAN IP — the RTP address 3CX uses |
+| `SIP_REGISTRAR` | The **local** 3CX SBC IP, not the cloud domain |
+| `DRACHTIO_SIP_PORT` | 5070 (the SBC owns 5060) |
+| `CLAUDE_API_URL` | `http://host.docker.internal:3333` |
+| `CLAUDE_TIMEOUT` | Seconds before giving up (default 180) |
+| `WHISPER_MODEL` | `medium` for Hindi/Marathi, `small` for speed |
+| `STT_LANGUAGE` | `auto` to detect the language per utterance |
+| `SUPPORTED_LANGS` | Languages we will answer in (`en,hi,mr`) |
+| `LANG_VOICE_MAP` | JSON, language code → Piper voice |
+| `VAD_NOISE_MULT` | How far above the noise floor counts as speech |
+| `BARGE_MULT` / `BARGE_MIN_MS` | How hard it is to interrupt her |
+| `KEEPALIVE_SPEAK_EVERY` | Speak every Nth hold-music round |
 
-## Documentation
+## Docs
 
-- [README.md](README.md) - User quickstart
-- [cli/README.md](cli/README.md) - CLI reference
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - Common issues
-- [voice-app/DEPLOYMENT.md](voice-app/DEPLOYMENT.md) - Production deployment
-- [voice-app/README-OUTBOUND.md](voice-app/README-OUTBOUND.md) - Outbound API
-- [CONSTITUTION.md](CONSTITUTION.md) - DevFlow principles
+- [README.md](README.md) — quickstart and credits
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — every failure mode we hit
+- [docs/MCP-SERVER.md](docs/MCP-SERVER.md) — letting Claude call you
+- [docs/LANGUAGES.md](docs/LANGUAGES.md) — Hindi/Marathi setup
+- [voice-app/DEPLOYMENT.md](voice-app/DEPLOYMENT.md) — production notes
+- [voice-app/README-OUTBOUND.md](voice-app/README-OUTBOUND.md) — outbound API

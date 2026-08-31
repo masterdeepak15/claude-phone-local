@@ -13,11 +13,12 @@ const CLAUDE_API_URL = process.env.CLAUDE_API_URL || 'http://localhost:3333';
  * @param {Object} options - Options including callId for session management
  * @param {string} options.callId - Call UUID for maintaining conversation context
  * @param {string} options.devicePrompt - Device-specific personality prompt
- * @param {number} options.timeout - Timeout in seconds (default: 30, AC27)
+ * @param {number} options.timeout - Timeout in seconds (default: CLAUDE_TIMEOUT env or 180)
  * @returns {Promise<string>} Claude's response
  */
 async function query(prompt, options = {}) {
-  const { callId, devicePrompt, timeout = 30 } = options; // AC27: Default 30s timeout
+  const DEFAULT_TIMEOUT = parseInt(process.env.CLAUDE_TIMEOUT || '180', 10);
+  const { callId, devicePrompt, timeout = DEFAULT_TIMEOUT } = options;
   const timestamp = new Date().toISOString();
 
   try {

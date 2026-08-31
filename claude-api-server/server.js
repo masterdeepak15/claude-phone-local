@@ -34,7 +34,7 @@ const PORT = process.env.PORT || 3333;
  * with your zsh profile fully loaded.
  */
 function buildClaudeEnvironment() {
-  const HOME = process.env.HOME || '/root';
+  const HOME = process.env.HOME || process.env.USERPROFILE || '/root';
   const PAI_DIR = path.join(HOME, '.claude');
 
   // Load ~/.claude/.env (all API keys)
@@ -53,26 +53,30 @@ function buildClaudeEnvironment() {
     }
   }
 
-  // Build PATH like zsh profile does
-  const fullPath = [
-    '/opt/homebrew/bin',
-    '/opt/homebrew/opt/python@3.12/bin',
-    '/opt/homebrew/opt/libpq/bin',
-    path.join(HOME, '.bun/bin'),
-    path.join(HOME, '.local/bin'),
-    path.join(HOME, '.pyenv/bin'),
-    path.join(HOME, '.pyenv/shims'),
-    path.join(HOME, 'go/bin'),
-    '/usr/local/go/bin',
-    path.join(HOME, 'bin'),
-    path.join(HOME, '.lmstudio/bin'),
-    path.join(HOME, '.opencode/bin'),
-    '/usr/local/bin',
-    '/usr/bin',
-    '/bin',
-    '/usr/sbin',
-    '/sbin'
-  ].join(':');
+  // Build PATH like zsh profile does (mac/Linux). On Windows, the existing
+  // process PATH already resolves `claude`, `node`, etc. - don't stomp it.
+  const isWindows = process.platform === 'win32';
+  const fullPath = isWindows
+    ? process.env.PATH
+    : [
+      '/opt/homebrew/bin',
+      '/opt/homebrew/opt/python@3.12/bin',
+      '/opt/homebrew/opt/libpq/bin',
+      path.join(HOME, '.bun/bin'),
+      path.join(HOME, '.local/bin'),
+      path.join(HOME, '.pyenv/bin'),
+      path.join(HOME, '.pyenv/shims'),
+      path.join(HOME, 'go/bin'),
+      '/usr/local/go/bin',
+      path.join(HOME, 'bin'),
+      path.join(HOME, '.lmstudio/bin'),
+      path.join(HOME, '.opencode/bin'),
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+      '/usr/sbin',
+      '/sbin'
+    ].join(':');
 
   const env = {
     ...process.env,
@@ -149,6 +153,12 @@ function runClaudeOnce({ fullPrompt, callId, timestamp }) {
 
   const args = [
     '--dangerously-skip-permissions',
+    // Every phone turn spawns a fresh CLI process. Without this it tries to
+    // connect to every configured MCP server first - including remote HTTP ones
+    // that need auth and simply time out - which added ~30-60s of dead air to
+    // each answer. The phone agent does not need them. Set PHONE_ENABLE_MCP=1
+    // if you deliberately want MCP tools available over the phone.
+    ...(process.env.PHONE_ENABLE_MCP === '1' ? [] : ['--strict-mcp-config']),
     '-p', fullPrompt,
     '--model', CLAUDE_MODEL
   ];

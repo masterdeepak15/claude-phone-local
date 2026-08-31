@@ -257,7 +257,12 @@ router.post('/outbound-call', async function(req, res) {
               initialContext: message,
               context: context,           // NEW: pass structured context
               skipGreeting: true,
-              maxTurns: 20
+              maxTurns: 20,
+              // Record every exchange on the session so the caller (and the MCP
+              // tool) can read the user's answer afterwards via GET /api/call/:id.
+              onTurn: function (userText, assistantText) {
+                session.recordTurn(userText, assistantText);
+              }
             });
 
             await hangupCall(dialog, endpoint, callId);

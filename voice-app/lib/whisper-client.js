@@ -56,8 +56,9 @@ async function transcribeLocal(wavBuffer, language) {
   });
 
   const text = (response.data && response.data.text) ? response.data.text.trim() : "";
-  console.log(`[${timestamp}] WHISPER-LOCAL Transcribed: ${text.substring(0, 100)}${text.length > 100 ? "..." : ""}`);
-  return text;
+  const detected = (response.data && response.data.language) ? response.data.language : null;
+  console.log(`[${timestamp}] WHISPER-LOCAL Transcribed [${detected || "?"}]: ${text.substring(0, 100)}${text.length > 100 ? "..." : ""}`);
+  return { text, language: detected };
 }
 
 async function transcribeCloud(wavBuffer, language) {
@@ -94,12 +95,27 @@ async function transcribeCloud(wavBuffer, language) {
  * @returns {Promise<string>} Transcribed text
  */
 async function transcribe(audioBuffer, options = {}) {
-  const { format = "pcm", sampleRate = 8000, language = "en" } = options;
+  const result = await transcribeDetailed(audioBuffer, options);
+  return result.text;
+}
+
+/**
+ * Same as transcribe() but also reports the language Whisper detected.
+ * @returns {Promise<{text: string, language: string|null}>}
+ */
+async function transcribeDetailed(audioBuffer, options = {}) {
+  const {
+    format = "pcm",
+    sampleRate = 8000,
+    language = process.env.STT_LANGUAGE || "auto"
+  } = options;
 
   const wavBuffer = format === "pcm" ? pcmToWav(audioBuffer, sampleRate) : audioBuffer;
 
   if (STT_MODE === "cloud") {
-    return transcribeCloud(wavBuffer, language);
+    // Cloud path has no detection contract; report the requested language.
+    const text = await transcribeCloud(wavBuffer, language === "auto" ? undefined : language);
+    return { text, language: language === "auto" ? null : language };
   }
   return transcribeLocal(wavBuffer, language);
 }
@@ -117,6 +133,7 @@ function isAvailable() {
 
 module.exports = {
   transcribe,
+  transcribeDetailed,
   pcmToWav,
   isAvailable,
   mode: STT_MODE

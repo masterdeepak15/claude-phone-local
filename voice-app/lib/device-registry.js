@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('./logger');
 
-const CONFIG_PATH = path.join(__dirname, '../config/devices.json');
+const CONFIG_PATH = process.env.DEVICES_CONFIG || path.join(__dirname, '../config/devices.json');
 
 // Default device (Morpheus) - used when config file missing or no match found
 const MORPHEUS_DEFAULT = {

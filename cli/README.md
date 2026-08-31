@@ -1,5 +1,10 @@
 # Claude Phone CLI
 
+> **Note:** since v2 all services run in a **single container**, so commands
+> that used to target one service now act on the whole stack. Speech models and
+> config live in `./data` and are provisioned automatically on first run --
+> there are no manual download steps. See [../README.md](../README.md).
+
 Command-line interface for Claude Phone. Single-command setup and management.
 
 ## Installation
@@ -39,7 +44,7 @@ Select this when setting up a Raspberry Pi or dedicated voice box that connects 
 5. Server LAN IP (for RTP audio routing)
 
 **What `claude-phone start` does:**
-- Starts Docker containers (drachtio, freeswitch, voice-app)
+- Starts the `claude-phone` container (drachtio, FreeSWITCH, voice-app, STT, TTS under supervisord)
 - Connects to the remote API server you specified
 
 ### API Server
@@ -65,7 +70,7 @@ Select this for a single machine running everything.
 4. Server LAN IP, API port, and HTTP port
 
 **What `claude-phone start` does:**
-- Starts Docker containers (drachtio, freeswitch, voice-app)
+- Starts the `claude-phone` container (drachtio, FreeSWITCH, voice-app, STT, TTS under supervisord)
 - Starts claude-api-server
 
 ### Pi Auto-Detection
@@ -110,7 +115,7 @@ claude-phone device remove <name>   # Remove a device by name
 
 ```bash
 claude-phone logs               # Tail all service logs
-claude-phone logs voice-app     # Voice app only
+claude-phone logs               # all services (one container now)
 claude-phone logs drachtio      # SIP server only
 claude-phone logs freeswitch    # Media server only
 ```
@@ -136,7 +141,7 @@ All configuration is stored in `~/.claude-phone/`:
 ```
 ~/.claude-phone/
 ├── config.json           # Main configuration (chmod 600)
-├── docker-compose.yml    # Generated Docker config
+├── docker-compose.yml    # Generated: one service + ./data volume
 ├── .env                  # Generated environment file
 ├── server.pid            # API server process ID
 └── backups/              # Configuration backups

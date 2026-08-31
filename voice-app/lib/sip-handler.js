@@ -5,31 +5,72 @@
 
 const { setTimeout: sleep } = require('node:timers/promises');
 
+// FreeSWITCH (a separate container) fetches/connects to these - must be the
+// voice-app container's address, not FreeSWITCH's own loopback.
+const AUDIO_BASE_URL = process.env.AUDIO_BASE_URL || 'http://voice-app:3000';
+const AUDIO_WS_HOST = new URL(AUDIO_BASE_URL).hostname;
+
 // Audio cue URLs
-const READY_BEEP_URL = 'http://127.0.0.1:3000/static/ready-beep.wav';
-const GOTIT_BEEP_URL = 'http://127.0.0.1:3000/static/gotit-beep.wav';
-const HOLD_MUSIC_URL = 'http://127.0.0.1:3000/static/hold-music.mp3';
+const READY_BEEP_URL = `${AUDIO_BASE_URL}/static/ready-beep.wav`;
+const GOTIT_BEEP_URL = `${AUDIO_BASE_URL}/static/gotit-beep.wav`;
+const HOLD_MUSIC_URL = `${AUDIO_BASE_URL}/static/hold-music.wav`;
 
 // Default voice ID (Morpheus)
 const DEFAULT_VOICE_ID = 'JAgnJveGGUh4qy4kh6dF';
 
+// Whisper language code -> Piper voice installed in tts-local/voices/.
+// Whisper detects the caller's language per utterance and we answer in the
+// same one. Override/extend with LANG_VOICE_MAP in .env as JSON.
+const DEFAULT_LANG_VOICES = {
+  en: 'en_US-lessac-medium',
+  hi: 'hi_IN-priyamvada-medium',
+  mr: 'mr_IN-google-medium'
+};
+
+let LANG_VOICES = DEFAULT_LANG_VOICES;
+if (process.env.LANG_VOICE_MAP) {
+  try {
+    LANG_VOICES = Object.assign({}, DEFAULT_LANG_VOICES, JSON.parse(process.env.LANG_VOICE_MAP));
+  } catch (e) {
+    console.log('[' + new Date().toISOString() + '] LANG: bad LANG_VOICE_MAP JSON, using defaults');
+  }
+}
+
+// Languages we will actually answer in. Anything Whisper detects outside this
+// set falls back to the device's own voice, so a misdetection can't leave us
+// with no installed model.
+const SUPPORTED_LANGS = (process.env.SUPPORTED_LANGS || 'en,hi,mr')
+  .split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+
+function voiceForLanguage(lang, fallbackVoice) {
+  if (!lang) return fallbackVoice;
+  if (SUPPORTED_LANGS.indexOf(lang) === -1) return fallbackVoice;
+  return LANG_VOICES[lang] || fallbackVoice;
+}
+
 // Claude Code-style thinking phrases
 const THINKING_PHRASES = [
-  "Pondering...",
-  "Elucidating...",
-  "Cogitating...",
-  "Ruminating...",
-  "Contemplating...",
-  "Consulting the oracle...",
-  "Summoning knowledge...",
-  "Engaging neural pathways...",
-  "Accessing the mainframe...",
-  "Querying the void...",
-  "Let me think about that...",
-  "Processing...",
-  "Hmm, interesting question...",
-  "One moment...",
-  "Searching my brain...",
+  "Let me check that for you.",
+  "One moment.",
+  "Just a second.",
+  "Looking into it now.",
+  "Give me a moment.",
+  "Checking on that.",
+  "Hang on, almost there.",
+  "Still working on it.",
+  "Nearly done.",
+  "Bear with me a moment.",
+];
+
+// Said only while the caller is already waiting, so they never hear the same
+// line twice in a row within one wait.
+const WAITING_PHRASES = [
+  "Still working on this.",
+  "Almost there.",
+  "Just a little longer.",
+  "Nearly finished.",
+  "Hang in there, still going.",
+  "Won't be much longer.",
 ];
 
 function getRandomThinkingPhrase() {
@@ -59,7 +100,16 @@ function extractDialedExtension(req) {
 
 function isGoodbye(transcript) {
   const lower = transcript.toLowerCase().trim();
-  const goodbyePhrases = ['goodbye', 'good bye', 'bye', 'hang up', 'end call', "that's all", 'thats all'];
+  const goodbyePhrases = [
+    // English
+    'goodbye', 'good bye', 'bye', 'bye bye', 'hang up', 'end call', 'end the call',
+    'close the call', 'cut the call', 'disconnect', "that's all", 'thats all',
+    'thank you bye', 'talk later',
+    // Hindi / Marathi (Devanagari + common romanisations)
+    'अलविदा', 'नमस्ते', 'बाय', 'फोन बंद करो', 'कॉल बंद करो', 'बंद करो',
+    'ठेवतो', 'ठेवते', 'फोन ठेव', 'बंद कर',
+    'alvida', 'phone band karo', 'call band karo', 'band karo', 'thevto'
+  ];
   return goodbyePhrases.some(function(phrase) {
     return lower === phrase || lower.includes(' ' + phrase) ||
            lower.startsWith(phrase + ' ') || lower.endsWith(' ' + phrase);
@@ -105,6 +155,41 @@ function extractVoiceLine(response) {
 }
 
 /**
+ * Play a clip the caller is allowed to interrupt.
+ *
+ * FreeSWITCH plays to completion unless told otherwise, so to support barge-in
+ * we arm the detector, then issue uuid_break the moment the caller starts
+ * talking. Returns true if the caller cut in, so the loop can skip straight to
+ * listening instead of finishing what it was saying.
+ */
+async function playInterruptible(endpoint, session, url) {
+  if (!session) {
+    await endpoint.play(url);
+    return false;
+  }
+
+  let barged = false;
+  const onBarge = function () {
+    barged = true;
+    // uuid_break stops the current playback on this leg immediately.
+    endpoint.api('uuid_break', endpoint.uuid).catch(function () {});
+  };
+
+  session.once('barge-in', onBarge);
+  session.setBargeInEnabled(true);
+  try {
+    await endpoint.play(url);
+  } finally {
+    session.setBargeInEnabled(false);
+    session.removeListener('barge-in', onBarge);
+  }
+  if (barged) {
+    console.log('[' + new Date().toISOString() + '] BARGE-IN: caller interrupted, listening now');
+  }
+  return barged;
+}
+
+/**
  * Main conversation loop
  * @param {Object} deviceConfig - Device configuration (name, prompt, voiceId, etc.) or null for default
  */
@@ -117,7 +202,17 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
   // Get device-specific settings
   const deviceName = deviceConfig ? deviceConfig.name : 'Morpheus';
   const devicePrompt = deviceConfig ? deviceConfig.prompt : null;
-  const voiceId = (deviceConfig && deviceConfig.voiceId) ? deviceConfig.voiceId : DEFAULT_VOICE_ID;
+  // Local mode: device.voice is a Piper voice name (null falls back to PIPER_VOICE env).
+  // Cloud mode: device.voiceId is an ElevenLabs voice ID (falls back to DEFAULT_VOICE_ID).
+  const voiceId = ttsService.mode === 'cloud'
+    ? ((deviceConfig && deviceConfig.voiceId) ? deviceConfig.voiceId : DEFAULT_VOICE_ID)
+    : ((deviceConfig && deviceConfig.voice) ? deviceConfig.voice : null);
+  // Voice used for the current turn - starts as the device voice and follows
+  // the caller's detected language from the first utterance onward.
+  let turnVoice = ttsService.mode === 'cloud'
+    ? (deviceConfig && deviceConfig.voiceId ? deviceConfig.voiceId : DEFAULT_VOICE_ID)
+    : (deviceConfig && deviceConfig.voice ? deviceConfig.voice : null);
+
   const greeting = deviceConfig && deviceConfig.name !== 'Morpheus'
     ? "Hello! I'm " + deviceConfig.name + ". How can I help you today?"
     : "Hello! I'm your server. How can I help you today?";
@@ -125,12 +220,15 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
   try {
     console.log('[' + new Date().toISOString() + '] CONVERSATION Starting (session: ' + callUuid + ', device: ' + deviceName + ', voice: ' + voiceId + ')...');
 
-    // Play device-specific greeting with device voice
+    // Play device-specific greeting with device voice BEFORE starting audio fork
+    console.log('[' + new Date().toISOString() + '] Generating greeting...');
     const greetingUrl = await ttsService.generateSpeech(greeting, voiceId);
+    console.log('[' + new Date().toISOString() + '] Playing greeting: ' + greetingUrl);
     await endpoint.play(greetingUrl);
+    console.log('[' + new Date().toISOString() + '] Greeting played successfully');
 
-    // Start fork for entire call
-    const wsUrl = 'ws://127.0.0.1:' + wsPort + '/' + encodeURIComponent(callUuid);
+    // Start fork for entire call AFTER greeting
+    const wsUrl = 'ws://' + AUDIO_WS_HOST + ':' + wsPort + '/' + encodeURIComponent(callUuid);
     const sessionPromise = audioForkServer.expectSession(callUuid, { timeoutMs: 10000 });
 
     await endpoint.forkAudioStart({
@@ -172,7 +270,7 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
       session.setCaptureEnabled(false);
 
       if (!utterance) {
-        const promptUrl = await ttsService.generateSpeech("I didn't hear anything. Are you still there?", voiceId);
+        const promptUrl = await ttsService.generateSpeech("I didn't hear anything. Are you still there?", turnVoice);
         await endpoint.play(promptUrl);
         continue;
       }
@@ -184,22 +282,28 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
         console.log('[' + new Date().toISOString() + '] BEEP: Got-it beep failed, continuing');
       }
 
-      // Transcribe
-      const transcript = await whisperClient.transcribe(utterance.audio, {
+      // Transcribe (language auto-detected unless STT_LANGUAGE pins one)
+      const sttResult = await whisperClient.transcribeDetailed(utterance.audio, {
         format: 'pcm',
-        sampleRate: 16000
+        sampleRate: 16000,
+        language: (deviceConfig && deviceConfig.language) || process.env.STT_LANGUAGE || 'auto'
       });
+      const transcript = sttResult.text;
+      const detectedLang = sttResult.language;
 
-      console.log('[' + new Date().toISOString() + '] WHISPER: "' + transcript + '"');
+      // Answer in whatever language the caller just used.
+      turnVoice = voiceForLanguage(detectedLang, voiceId);
+      console.log('[' + new Date().toISOString() + '] WHISPER [' + (detectedLang || '?') +
+        ' -> voice ' + turnVoice + ']: "' + transcript + '"');
 
       if (!transcript || transcript.trim().length < 2) {
-        const clarifyUrl = await ttsService.generateSpeech("Sorry, I didn't catch that. Could you repeat?", voiceId);
+        const clarifyUrl = await ttsService.generateSpeech("Sorry, I didn't catch that. Could you repeat?", turnVoice);
         await endpoint.play(clarifyUrl);
         continue;
       }
 
       if (isGoodbye(transcript)) {
-        const byeUrl = await ttsService.generateSpeech("Goodbye! Call again anytime.", voiceId);
+        const byeUrl = await ttsService.generateSpeech("Goodbye! Call again anytime.", turnVoice);
         await endpoint.play(byeUrl);
         break;
       }
@@ -207,28 +311,48 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
       // THINKING FEEDBACK
       const thinkingPhrase = getRandomThinkingPhrase();
       console.log('[' + new Date().toISOString() + '] THINKING: "' + thinkingPhrase + '"');
-      const thinkingUrl = await ttsService.generateSpeech(thinkingPhrase, voiceId);
+      const thinkingUrl = await ttsService.generateSpeech(thinkingPhrase, turnVoice);
       await endpoint.play(thinkingUrl);
 
-      // Hold music in background
-      let musicPlaying = false;
-      endpoint.play(HOLD_MUSIC_URL).catch(function(e) {
-        console.log('[' + new Date().toISOString() + '] MUSIC: Hold music failed, continuing');
-      });
-      musicPlaying = true;
+      // hears nothing for the whole query and hangs up.
+      // Fill the whole wait, not just parts of it. The gap alternates between a
+      // soft music bed and a spoken line, so the line never goes dead. Clips play
+      // to completion - one endpoint cannot layer two streams - and every Nth
+      // round is speech instead of music.
+      let waiting = true;
+      const SPEAK_EVERY = parseInt(process.env.KEEPALIVE_SPEAK_EVERY || '3', 10);
+      const keepAlive = (async function () {
+        let round = 0;
+        while (waiting) {
+          round++;
+          try {
+            const clipUrl = (round % SPEAK_EVERY === 0)
+              ? await ttsService.generateSpeech(getRandomWaitingPhrase(), turnVoice)
+              : HOLD_MUSIC_URL;
+            if (!waiting) break;
+            // Caller can cut through the hold music / filler to add something.
+            if (await playInterruptible(endpoint, session, clipUrl)) {
+              waiting = false;
+              break;
+            }
+          } catch (e) {
+            console.log('[' + new Date().toISOString() + '] KEEPALIVE: stopped (' + e.message + ')');
+            return;
+          }
+        }
+      })();
 
       // Query Claude with device-specific prompt
       console.log('[' + new Date().toISOString() + '] CLAUDE Querying (device: ' + deviceName + ')...');
-      const claudeResponse = await claudeBridge.query(
-        transcript,
-        { callId: callUuid, devicePrompt: devicePrompt }
-      );
-
-      // Stop hold music
-      if (musicPlaying) {
-        try {
-          await endpoint.api('uuid_break', endpoint.uuid);
-        } catch (e) {}
+      let claudeResponse;
+      try {
+        claudeResponse = await claudeBridge.query(
+          transcript,
+          { callId: callUuid, devicePrompt: devicePrompt }
+        );
+      } finally {
+        waiting = false;
+        try { await keepAlive; } catch (e) {}
       }
 
       console.log('[' + new Date().toISOString() + '] CLAUDE Response received');
@@ -237,14 +361,15 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
       const voiceLine = extractVoiceLine(claudeResponse);
       console.log('[' + new Date().toISOString() + '] VOICE: "' + voiceLine + '"');
 
-      const responseUrl = await ttsService.generateSpeech(voiceLine, voiceId);
-      await endpoint.play(responseUrl);
+      const responseUrl = await ttsService.generateSpeech(voiceLine, turnVoice);
+      // Long answers are the usual thing people want to interrupt.
+      await playInterruptible(endpoint, session, responseUrl);
 
       console.log('[' + new Date().toISOString() + '] CONVERSATION Turn ' + turnCount + ' complete');
     }
 
     if (turnCount >= MAX_TURNS) {
-      const maxUrl = await ttsService.generateSpeech("We've been talking for a while. Goodbye!", voiceId);
+      const maxUrl = await ttsService.generateSpeech("We've been talking for a while. Goodbye!", turnVoice);
       await endpoint.play(maxUrl);
     }
 

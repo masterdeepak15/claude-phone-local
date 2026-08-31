@@ -1,5 +1,11 @@
 # Outbound Calling API
 
+> **Using this from Claude Code?** Prefer the MCP server -- it wraps these
+> endpoints as native tools (`call_me`, `call_status`, `hangup`) so Claude can
+> phone you without you writing any HTTP calls. See
+> [../docs/MCP-SERVER.md](../docs/MCP-SERVER.md). This document is the raw HTTP
+> API underneath, still fully supported.
+
 API reference for initiating outbound calls from Claude Phone.
 
 ## Overview

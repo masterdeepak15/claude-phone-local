@@ -1,0 +1,27 @@
+# --- secrets: must never reach the registry --------------------------------
+.env
+.env.*
+!.env.example
+**/devices.json
+voice-app/config/devices.json
+
+# --- large runtime artefacts: downloaded on first run, not shipped ---------
+data/
+tts-local/voices/*.onnx
+tts-local/voices/*.onnx.json
+voice-app/audio/
+voice-app/audio-temp/
+**/*.wav
+**/*.mp3
+!voice-app/static/*.wav
+
+# --- dev noise -------------------------------------------------------------
+node_modules/
+**/node_modules/
+.git/
+.github/
+*.log
+docker-compose.multi.yml
+docker-compose.bridge.yml
+src/features/
+.claude/

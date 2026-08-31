@@ -24,6 +24,21 @@ function pcmStats(buf, endian = 'LE') {
   return { sampleCount, rms, maxAbs, nearZeroRatio: nearZero / sampleCount };
 }
 
+// VAD tuning. Defaults suit a PBX line with a noise floor; override in .env if
+// speech is being missed (lower) or silence is never detected (raise).
+const VAD_RMS_FLOOR = parseInt(process.env.VAD_RMS_FLOOR || '650', 10);
+const VAD_MAX_FLOOR = parseInt(process.env.VAD_MAX_FLOOR || '2200', 10);
+const VAD_NOISE_MULT = parseFloat(process.env.VAD_NOISE_MULT || '2.5');
+const VAD_WINDOW = parseInt(process.env.VAD_WINDOW || '250', 10);      // ~5s of frames
+const VAD_FLOOR_PCT = parseFloat(process.env.VAD_FLOOR_PCT || '0.2');  // 20th percentile
+
+// Barge-in is deliberately harder to trigger than normal speech detection: it
+// aborts whatever the agent is saying, so a cough, a door, or any echo of our
+// own audio must not fire it. Speech has to be louder than the normal threshold
+// AND sustained, before we cut playback.
+const BARGE_MULT = parseFloat(process.env.BARGE_MULT || '1.6');
+const BARGE_MIN_MS = parseInt(process.env.BARGE_MIN_MS || '320', 10);
+
 class AudioForkSession extends EventEmitter {
   constructor({
     ws,
@@ -50,6 +65,10 @@ class AudioForkSession extends EventEmitter {
     this._preRollMaxBytes = Math.floor((this.sampleRate * 0.2) * 2);
 
     this._inSpeech = false;
+    this._noiseFloor = 0;      // learned from the quiet frames of this call
+    this.bargeInEnabled = false;
+    this._bargeMs = 0;
+    this._rmsHistory = [];
     this._utteranceChunks = [];
     this._utteranceBytes = 0;
     this._speechBytes = 0;
@@ -173,15 +192,40 @@ class AudioForkSession extends EventEmitter {
     return result;
   }
 
+  setBargeInEnabled(on) {
+    this.bargeInEnabled = !!on;
+    this._bargeMs = 0;
+  }
+
   _isSpeech(buf) {
     if (!this._pcmEndian) this._pcmEndian = this._detectEndian(buf);
     const stats = pcmStats(buf, this._pcmEndian);
 
-    const rmsThreshold = 650;
-    const maxThreshold = 2200;
+    // Fixed thresholds only work on a line that sends true digital silence
+    // (RMS 0) between words. Through a PBX/SBC the gaps carry a noise floor -
+    // often RMS 1000-2500 - which sits above a fixed 650 threshold, so every
+    // frame reads as speech, the end-of-speech silence never arrives and the
+    // utterance is never finalized.
+    //
+    // So track the floor and require speech to stand out from it.
+    // Rolling window of recent frame energies. Taking a low percentile of it
+    // finds the quiet moments even when most frames are loud, so the floor is
+    // learned no matter how the call starts. An EMA updated only on "silence"
+    // cannot bootstrap here: if the floor already exceeds the fixed threshold,
+    // every frame classifies as speech and the floor never updates at all.
+    this._rmsHistory.push(stats.rms);
+    if (this._rmsHistory.length > VAD_WINDOW) this._rmsHistory.shift();
 
-    const looksSilent = stats.nearZeroRatio > 0.94 && stats.rms < rmsThreshold;
-    if (looksSilent) return false;
+    let floor = 0;
+    if (this._rmsHistory.length >= 10) {
+      const sorted = this._rmsHistory.slice().sort((a, b) => a - b);
+      floor = sorted[Math.floor(sorted.length * VAD_FLOOR_PCT)];
+    }
+    this._noiseFloor = floor;
+
+    const rmsThreshold = Math.max(VAD_RMS_FLOOR, floor * VAD_NOISE_MULT);
+    const maxThreshold = Math.max(VAD_MAX_FLOOR, floor * VAD_NOISE_MULT * 3);
+
     return stats.maxAbs >= maxThreshold || stats.rms >= rmsThreshold;
   }
 
@@ -219,6 +263,20 @@ class AudioForkSession extends EventEmitter {
       this._lastLogTime = now;
     }
 
+    // Barge-in runs even while capture is disabled - that is the whole point,
+    // the caller is interrupting audio we are currently playing.
+    if (this.bargeInEnabled && data.length >= 2) {
+      const stats = pcmStats(data, this._pcmEndian || 'LE');
+      const loudEnough = stats.rms >= Math.max(VAD_RMS_FLOOR, this._noiseFloor * VAD_NOISE_MULT) * BARGE_MULT;
+      this._bargeMs = loudEnough ? this._bargeMs + this._chunkDurationMs(data.length) : 0;
+      if (this._bargeMs >= BARGE_MIN_MS) {
+        this._bargeMs = 0;
+        this.bargeInEnabled = false;
+        console.log('[AUDIO-DEBUG] BARGE-IN detected (RMS=' + Math.round(stats.rms) + ') for ' + this.callUuid);
+        this.emit('barge-in');
+      }
+    }
+
     if (!this.captureEnabled) {
       return;
     }
@@ -231,7 +289,7 @@ class AudioForkSession extends EventEmitter {
     // Log speech detection periodically
     if (this._binaryCount % 50 === 1) {
       const stats = pcmStats(data, this._pcmEndian || 'LE');
-      console.log('[AUDIO-DEBUG] VAD: isSpeech=' + isSpeech + ', inSpeech=' + this._inSpeech + ', silenceMs=' + Math.round(this._silenceMs) + ', RMS=' + Math.round(stats.rms) + ', max=' + stats.maxAbs);
+      console.log('[AUDIO-DEBUG] VAD: isSpeech=' + isSpeech + ', inSpeech=' + this._inSpeech + ', silenceMs=' + Math.round(this._silenceMs) + ', RMS=' + Math.round(stats.rms) + ', max=' + stats.maxAbs + ', floor=' + Math.round(this._noiseFloor || 0));
     }
 
     if (!this._inSpeech) {
