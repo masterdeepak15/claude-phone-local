@@ -938,6 +938,36 @@ async function setupAPIKeys(config) {
  * @returns {Promise<object>} Updated config
  */
 async function setupSIP(config) {
+  // Detect a native 3CX SBC service on this machine (checks the process and
+  // port 5060) so drachtio doesn't try to bind the same port and fail
+  // silently at startup - the exact bug this setup wizard used to leave
+  // standard ("both"/all-in-one) installs exposed to, since this detection
+  // previously only ran in the separate Pi-mode setup path.
+  const sbcSpinner = ora('Checking for a local 3CX SBC service...').start();
+  let sbcDetected = false;
+  try {
+    sbcDetected = await detect3cxSbc();
+    sbcSpinner.succeed(sbcDetected
+      ? '3CX SBC detected on this PC (port 5060 in use)'
+      : 'No local 3CX SBC detected');
+  } catch (err) {
+    sbcSpinner.warn('3CX SBC detection failed: ' + err.message);
+  }
+
+  const { sbcOnThisPc } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'sbcOnThisPc',
+      message: 'Is the 3CX SBC service running on this same PC?',
+      default: sbcDetected || config.sip.registrar === 'auto' || config.sip.registrar === config.server?.externalIp
+    }
+  ]);
+
+  config.sip.drachtioSipPort = sbcOnThisPc ? 5070 : 5060;
+  if (sbcOnThisPc) {
+    console.log(chalk.green('✓ Will use port 5070 for drachtio (avoid conflict with the SBC on port 5060)\n'));
+  }
+
   const answers = await inquirer.prompt([
     {
       type: 'input',
@@ -954,11 +984,11 @@ async function setupSIP(config) {
         return true;
       }
     },
-    {
+    ...(sbcOnThisPc ? [] : [{
       type: 'input',
       name: 'registrar',
       message: '3CX registrar IP (e.g., 192.168.1.100):',
-      default: config.sip.registrar,
+      default: config.sip.registrar === 'auto' ? '' : config.sip.registrar,
       validate: (input) => {
         if (!input || input.trim() === '') {
           return 'SIP registrar IP is required';
@@ -968,11 +998,14 @@ async function setupSIP(config) {
         }
         return true;
       }
-    }
+    }])
   ]);
 
   config.sip.domain = answers.domain;
-  config.sip.registrar = answers.registrar;
+  // 'auto' tracks this machine's current LAN IP on every `claude-phone
+  // start`, same as server.externalIp - the SBC and this app running on the
+  // same PC means both need to move together whenever the network changes.
+  config.sip.registrar = sbcOnThisPc ? 'auto' : answers.registrar;
 
   return config;
 }
