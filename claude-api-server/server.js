@@ -1,29 +1,39 @@
 /**
  * Claude HTTP API Server
  *
- * HTTP server that wraps Claude Code CLI with session management
- * Runs on the API server to handle voice interface queries
+ * HTTP server that wraps Claude Code with session management, for the voice
+ * interface to query.
  *
  * Usage:
  *   node server.js
  *
  * Endpoints:
  *   POST /ask - Send a prompt to Claude (with optional callId for session)
+ *   POST /ask-structured - Send a prompt, get back validated JSON (n8n)
  *   POST /end-session - Clean up session for a call
  *   GET /health - Health check
+ *
+ * /ask runs on a persistent Claude Agent SDK session per callId (one
+ * `query()` process for the whole phone call, fed via an async queue) instead
+ * of spawning a fresh `claude` CLI process per turn. Process boot/init was a
+ * fixed multi-second tax on every single turn even with --resume restoring
+ * history - noticeable as "why does she pause before even starting to think"
+ * on every call. /ask-structured (n8n/automation, not latency-sensitive,
+ * needs its own retry-with-repair-prompt loop) still spawns the CLI per call.
  */
 
-const express = require('express');
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const {
+import express from 'express';
+import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import {
   buildQueryContext,
   buildStructuredPrompt,
   tryParseJsonFromText,
   validateRequiredFields,
   buildRepairPrompt,
-} = require('./structured');
+} from './structured.js';
 
 const app = express();
 const PORT = process.env.PORT || 3333;
@@ -114,90 +124,16 @@ const apiKeys = Object.keys(claudeEnv).filter(k =>
 );
 console.log('[STARTUP] API keys loaded:', apiKeys.join(', '));
 
-// Session storage: callId -> claudeSessionId
-const sessions = new Map();
+// Every phone turn used to spawn a fresh CLI process. Without
+// --strict-mcp-config it tries to connect to every configured MCP server
+// first - including remote HTTP ones that need auth and simply time out -
+// which added ~30-60s of dead air to each answer. The phone agent does not
+// need them. Set PHONE_ENABLE_MCP=1 if you deliberately want MCP tools
+// available over the phone.
+const STRICT_MCP = process.env.PHONE_ENABLE_MCP !== '1';
 
 // Model selection - Sonnet for balanced speed/quality
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
-
-function parseClaudeStdout(stdout) {
-  // Claude Code CLI may output JSONL; when it does, extract the `result` message.
-  // Otherwise, fall back to raw stdout.
-  let response = '';
-  let sessionId = null;
-
-  try {
-    const lines = String(stdout || '').trim().split('\n');
-    for (const line of lines) {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type === 'result' && parsed.result) {
-          response = parsed.result;
-          sessionId = parsed.session_id;
-        }
-      } catch {
-        // Not JSONL; ignore.
-      }
-    }
-
-    if (!response) response = String(stdout || '').trim();
-  } catch {
-    response = String(stdout || '').trim();
-  }
-
-  return { response, sessionId };
-}
-
-function runClaudeOnce({ fullPrompt, callId, timestamp }) {
-  const startTime = Date.now();
-
-  const args = [
-    '--dangerously-skip-permissions',
-    // Every phone turn spawns a fresh CLI process. Without this it tries to
-    // connect to every configured MCP server first - including remote HTTP ones
-    // that need auth and simply time out - which added ~30-60s of dead air to
-    // each answer. The phone agent does not need them. Set PHONE_ENABLE_MCP=1
-    // if you deliberately want MCP tools available over the phone.
-    ...(process.env.PHONE_ENABLE_MCP === '1' ? [] : ['--strict-mcp-config']),
-    '-p', fullPrompt,
-    '--model', CLAUDE_MODEL
-  ];
-
-  if (callId) {
-    if (sessions.has(callId)) {
-      args.push('--resume', callId);
-      console.log(`[${timestamp}] Resuming session: ${callId}`);
-    } else {
-      args.push('--session-id', callId);
-      sessions.set(callId, true);
-      console.log(`[${timestamp}] Starting new session: ${callId}`);
-    }
-  }
-
-  return new Promise((resolve, reject) => {
-    const claude = spawn('claude', args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
-      env: claudeEnv
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    claude.stdin.end();
-    claude.stdout.on('data', (data) => { stdout += data.toString(); });
-    claude.stderr.on('data', (data) => { stderr += data.toString(); });
-
-    claude.on('error', (error) => {
-      reject(error);
-    });
-
-    claude.on('close', (code) => {
-      const duration_ms = Date.now() - startTime;
-      resolve({ code, stdout, stderr, duration_ms });
-    });
-  });
-}
 
 /**
  * Voice Context - Prepended to all voice queries
@@ -231,6 +167,194 @@ Example response:
 
 `;
 
+// ============================================================
+// Persistent per-call Claude Agent SDK sessions (used by /ask)
+// ============================================================
+//
+// One query() call is spawned per callId on its first turn, and kept alive
+// for the rest of the phone call. Each subsequent /ask for that callId
+// pushes a new user message into the session's async queue instead of
+// spawning a new process - the SDK's streaming-input mode (prompt: an
+// AsyncIterable) is designed for exactly this: a long-lived interactive
+// session fed turn-by-turn.
+
+/** @type {Map<string, CallSession>} */
+const callSessions = new Map();
+
+class CallSession {
+  constructor(callId) {
+    this.callId = callId;
+    this._queue = [];
+    this._queueWaiters = [];
+    this._ended = false;
+    this._pendingResultResolvers = [];
+
+    this.query = query({
+      prompt: this._messageGenerator(),
+      options: {
+        model: CLAUDE_MODEL,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        strictMcpConfig: STRICT_MCP,
+      },
+    });
+
+    this._consumeLoop().catch((err) => {
+      console.error(`[${new Date().toISOString()}] SDK session ${callId} consume loop crashed:`, err.message);
+      this._failAllPending(err);
+    });
+  }
+
+  async *_messageGenerator() {
+    while (true) {
+      if (this._queue.length === 0) {
+        if (this._ended) return;
+        await new Promise((resolve) => this._queueWaiters.push(resolve));
+        continue;
+      }
+      const next = this._queue.shift();
+      if (next === null) return; // end-of-session sentinel
+      yield next;
+    }
+  }
+
+  _wakeGenerator() {
+    const waiters = this._queueWaiters;
+    this._queueWaiters = [];
+    waiters.forEach((resolve) => resolve());
+  }
+
+  /** Push a user turn and resolve once its result message arrives. */
+  sendMessage(text) {
+    return new Promise((resolve, reject) => {
+      this._pendingResultResolvers.push({ resolve, reject });
+      this._queue.push({
+        type: 'user',
+        message: { role: 'user', content: text },
+        parent_tool_use_id: null,
+      });
+      this._wakeGenerator();
+    });
+  }
+
+  async _consumeLoop() {
+    for await (const message of this.query) {
+      if (message.type === 'result') {
+        const pending = this._pendingResultResolvers.shift();
+        if (pending) pending.resolve(message);
+        continue;
+      }
+      // Other message types (assistant text/tool_use, system init, etc.) are
+      // available here for future streaming-to-caller work, but /ask only
+      // needs the final result per turn today.
+    }
+  }
+
+  _failAllPending(err) {
+    const pending = this._pendingResultResolvers.splice(0);
+    pending.forEach((p) => p.reject(err));
+  }
+
+  /** End the session: closes the generator so the underlying process exits. */
+  end() {
+    this._ended = true;
+    this._queue.push(null);
+    this._wakeGenerator();
+    this._failAllPending(new Error('Session ended'));
+  }
+}
+
+function getOrCreateSession(callId) {
+  let session = callSessions.get(callId);
+  if (!session) {
+    session = new CallSession(callId);
+    callSessions.set(callId, session);
+    console.log(`[${new Date().toISOString()}] SDK session started: ${callId}`);
+  }
+  return session;
+}
+
+// ============================================================
+// One-shot CLI path (used by /ask-structured only)
+// ============================================================
+
+function parseClaudeStdout(stdout) {
+  // Claude Code CLI may output JSONL; when it does, extract the `result` message.
+  // Otherwise, fall back to raw stdout.
+  let response = '';
+  let sessionId = null;
+
+  try {
+    const lines = String(stdout || '').trim().split('\n');
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === 'result' && parsed.result) {
+          response = parsed.result;
+          sessionId = parsed.session_id;
+        }
+      } catch {
+        // Not JSONL; ignore.
+      }
+    }
+
+    if (!response) response = String(stdout || '').trim();
+  } catch {
+    response = String(stdout || '').trim();
+  }
+
+  return { response, sessionId };
+}
+
+// Session storage for the one-shot /ask-structured path only.
+const structuredSessions = new Map();
+
+function runClaudeOnce({ fullPrompt, callId, timestamp }) {
+  const startTime = Date.now();
+
+  const args = [
+    '--dangerously-skip-permissions',
+    ...(STRICT_MCP ? ['--strict-mcp-config'] : []),
+    '-p', fullPrompt,
+    '--model', CLAUDE_MODEL
+  ];
+
+  if (callId) {
+    if (structuredSessions.has(callId)) {
+      args.push('--resume', callId);
+      console.log(`[${timestamp}] Resuming structured session: ${callId}`);
+    } else {
+      args.push('--session-id', callId);
+      structuredSessions.set(callId, true);
+      console.log(`[${timestamp}] Starting new structured session: ${callId}`);
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const claude = spawn('claude', args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      env: claudeEnv
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    claude.stdin.end();
+    claude.stdout.on('data', (data) => { stdout += data.toString(); });
+    claude.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    claude.on('error', (error) => {
+      reject(error);
+    });
+
+    claude.on('close', (code) => {
+      const duration_ms = Date.now() - startTime;
+      resolve({ code, stdout, stderr, duration_ms });
+    });
+  });
+}
+
 // Middleware
 app.use(express.json());
 
@@ -255,9 +379,10 @@ app.use((req, res, next) => {
  *   { "success": true, "response": "...", "duration_ms": 1234, "sessionId": "..." }
  *
  * Session Management:
- *   - If callId is provided and we have a stored session, uses --resume
- *   - First query for a callId captures the session_id for future turns
- *   - This maintains conversation context across multiple turns in a phone call
+ *   - callId maps to a persistent Claude Agent SDK session (one query()
+ *     process for the whole call, kept alive across turns via a message
+ *     queue) - see CallSession above. No callId means a short-lived
+ *     single-turn session that's discarded right after.
  *
  * Device Prompts:
  *   - If devicePrompt is provided, it's prepended before VOICE_CONTEXT
@@ -275,12 +400,9 @@ app.post('/ask', async (req, res) => {
     });
   }
 
-  // Check if we have an existing session for this call
-  const existingSession = callId ? sessions.get(callId) : null;
-
   console.log(`[${timestamp}] QUERY: "${prompt.substring(0, 100)}..."`);
   console.log(`[${timestamp}] MODEL: ${CLAUDE_MODEL}`);
-  console.log(`[${timestamp}] SESSION: callId=${callId || 'none'}, existing=${existingSession || 'none'}`);
+  console.log(`[${timestamp}] SESSION: callId=${callId || 'none'}, existing=${callId ? callSessions.has(callId) : false}`);
   console.log(`[${timestamp}] DEVICE PROMPT: ${devicePrompt ? 'Yes (' + devicePrompt.substring(0, 30) + '...)' : 'No'}`);
 
   try {
@@ -289,36 +411,47 @@ app.post('/ask', async (req, res) => {
      * 1. Device prompt (if provided) - identity and available skills
      * 2. VOICE_CONTEXT - general voice call instructions
      * 3. User's prompt - what they actually said
+     *
+     * Only sent on the FIRST turn of a session - the persistent SDK session
+     * already has this in its history for later turns, so resending it
+     * every turn would just be redundant tokens (the CLI's --resume worked
+     * the same way: system framing lived in turn 1's prompt).
      */
+    const session = callId ? getOrCreateSession(callId) : null;
+
     let fullPrompt = '';
-
-    if (devicePrompt) {
-      fullPrompt += `[DEVICE IDENTITY]\n${devicePrompt}\n[END DEVICE IDENTITY]\n\n`;
+    if (!session || session._sentContext !== true) {
+      if (devicePrompt) {
+        fullPrompt += `[DEVICE IDENTITY]\n${devicePrompt}\n[END DEVICE IDENTITY]\n\n`;
+      }
+      fullPrompt += VOICE_CONTEXT;
+      if (session) session._sentContext = true;
     }
-
-    fullPrompt += VOICE_CONTEXT;
     fullPrompt += prompt;
 
-    const { code, stdout, stderr, duration_ms } = await runClaudeOnce({ fullPrompt, callId, timestamp });
+    const activeSession = session || getOrCreateSession(`__oneshot_${startTime}_${Math.random().toString(36).slice(2)}`);
 
-    if (code !== 0) {
-      console.error(`[${new Date().toISOString()}] ERROR: Claude CLI exited with code ${code}`);
-      console.error(`STDERR: ${stderr}`);
-      console.error(`STDOUT: ${stdout.substring(0, 500)}`);
-      const errorMsg = stderr || stdout || `Exit code ${code}`;
-      return res.json({ success: false, error: `Claude CLI failed: ${errorMsg}`, duration_ms });
+    const result = await activeSession.sendMessage(fullPrompt);
+
+    if (!session) {
+      // Anonymous one-shot call - the session has no future turns, end it now.
+      activeSession.end();
+      callSessions.delete(activeSession.callId);
     }
 
-    const { response, sessionId } = parseClaudeStdout(stdout);
+    const duration_ms = Date.now() - startTime;
 
-    if (sessionId && callId) {
-      sessions.set(callId, sessionId);
-      console.log(`[${new Date().toISOString()}] SESSION STORED: ${callId} -> ${sessionId}`);
+    if (result.is_error) {
+      console.error(`[${new Date().toISOString()}] ERROR: Claude session reported an error result`);
+      console.error(`RESULT: ${result.result}`);
+      return res.json({ success: false, error: `Claude error: ${result.result}`, duration_ms });
     }
+
+    const response = result.result || '';
 
     console.log(`[${new Date().toISOString()}] RESPONSE (${duration_ms}ms): "${response.substring(0, 100)}..."`);
 
-    res.json({ success: true, response, sessionId, duration_ms });
+    res.json({ success: true, response, sessionId: result.session_id, duration_ms });
 
   } catch (error) {
     const duration_ms = Date.now() - startTime;
@@ -335,7 +468,10 @@ app.post('/ask', async (req, res) => {
 /**
  * POST /ask-structured
  *
- * Like /ask, but returns machine-validated JSON for n8n automations.
+ * Like /ask, but returns machine-validated JSON for n8n automations. Spawns
+ * a fresh CLI process per call (not the persistent SDK session /ask uses) -
+ * this endpoint isn't latency-sensitive the way live phone calls are, and
+ * its retry-with-repair-prompt loop is a natural fit for one-shot calls.
  *
  * Request body:
  *   {
@@ -388,7 +524,7 @@ app.post('/ask-structured', async (req, res) => {
 
   console.log(`[${timestamp}] STRUCTURED QUERY: "${String(prompt).substring(0, 100)}..."`);
   console.log(`[${timestamp}] MODEL: ${CLAUDE_MODEL}`);
-  console.log(`[${timestamp}] SESSION: callId=${callId || 'none'}, existing=${callId ? (sessions.has(callId) ? 'yes' : 'no') : 'none'}`);
+  console.log(`[${timestamp}] SESSION: callId=${callId || 'none'}, existing=${callId ? (structuredSessions.has(callId) ? 'yes' : 'no') : 'none'}`);
 
   try {
     let lastRaw = '';
@@ -417,7 +553,7 @@ app.post('/ask-structured', async (req, res) => {
       const { response, sessionId } = parseClaudeStdout(stdout);
       lastRaw = response;
 
-      if (sessionId && callId) sessions.set(callId, sessionId);
+      if (sessionId && callId) structuredSessions.set(callId, sessionId);
 
       const parsed = tryParseJsonFromText(response);
       if (!parsed.ok) {
@@ -482,9 +618,15 @@ app.post('/end-session', (req, res) => {
   const { callId } = req.body;
   const timestamp = new Date().toISOString();
 
-  if (callId && sessions.has(callId)) {
-    sessions.delete(callId);
-    console.log(`[${timestamp}] SESSION ENDED: ${callId}`);
+  if (callId && callSessions.has(callId)) {
+    callSessions.get(callId).end();
+    callSessions.delete(callId);
+    console.log(`[${timestamp}] SDK SESSION ENDED: ${callId}`);
+  }
+
+  if (callId && structuredSessions.has(callId)) {
+    structuredSessions.delete(callId);
+    console.log(`[${timestamp}] STRUCTURED SESSION ENDED: ${callId}`);
   }
 
   res.json({ success: true });
@@ -509,9 +651,9 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'Claude HTTP API Server',
-    version: '1.0.0',
+    version: '2.0.0',
     endpoints: {
-      'POST /ask': 'Send a prompt to Claude',
+      'POST /ask': 'Send a prompt to Claude (persistent SDK session per callId)',
       'POST /ask-structured': 'Send a prompt and return validated JSON (n8n)',
       'GET /health': 'Health check'
     }
@@ -529,12 +671,13 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('\nReceived SIGTERM, shutting down gracefully...');
+function shutdown() {
+  console.log('\nShutting down, ending active sessions...');
+  for (const session of callSessions.values()) {
+    try { session.end(); } catch { /* best effort */ }
+  }
   process.exit(0);
-});
+}
 
-process.on('SIGINT', () => {
-  console.log('\nReceived SIGINT, shutting down gracefully...');
-  process.exit(0);
-});
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

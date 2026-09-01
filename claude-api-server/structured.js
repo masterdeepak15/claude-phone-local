@@ -8,7 +8,7 @@
  * - Retrying once with a "repair" prompt when invalid
  */
 
-function buildQueryContext({
+export function buildQueryContext({
   queryType,
   requiredFields,
   fieldGuidance,
@@ -44,7 +44,7 @@ ${exampleBlock}[END STRUCTURED QUERY CONTEXT]
 `;
 }
 
-function buildStructuredPrompt({
+export function buildStructuredPrompt({
   devicePrompt,
   queryContext,
   userPrompt,
@@ -125,7 +125,7 @@ function extractJsonCandidates(text) {
   return [...new Set(candidates)];
 }
 
-function tryParseJsonFromText(text) {
+export function tryParseJsonFromText(text) {
   const candidates = extractJsonCandidates(text);
 
   for (const candidate of candidates) {
@@ -154,7 +154,7 @@ function getByPath(obj, path) {
   return cur;
 }
 
-function validateRequiredFields(data, requiredFields) {
+export function validateRequiredFields(data, requiredFields) {
   const required = Array.isArray(requiredFields) ? requiredFields : [];
   const missing = [];
 
@@ -174,7 +174,7 @@ function validateRequiredFields(data, requiredFields) {
   return { ok: true };
 }
 
-function buildRepairPrompt({
+export function buildRepairPrompt({
   queryType,
   requiredFields,
   fieldGuidance,
@@ -198,11 +198,4 @@ Invalid assistant output:
 `;
 }
 
-module.exports = {
-  buildQueryContext,
-  buildStructuredPrompt,
-  tryParseJsonFromText,
-  validateRequiredFields,
-  buildRepairPrompt,
-};
 
