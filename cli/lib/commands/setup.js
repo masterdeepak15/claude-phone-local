@@ -1253,8 +1253,19 @@ async function setupDevice(config) {
 async function setupServer(config) {
   const localIp = getLocalIP();
 
-  const answers = await inquirer.prompt([
+  const { ipMode } = await inquirer.prompt([
     {
+      type: 'confirm',
+      name: 'ipMode',
+      message: `Auto-detect the LAN IP on every "claude-phone start" (currently ${localIp})? ` +
+        'Recommended if this machine moves networks (laptop, DHCP) - answering ' +
+        'no locks in a fixed IP that goes stale the next time it changes.',
+      default: config.server.externalIp === 'auto' || config.server.externalIp === undefined
+    }
+  ]);
+
+  const answers = await inquirer.prompt([
+    ...(ipMode ? [] : [{
       type: 'input',
       name: 'externalIp',
       message: 'Server LAN IP (for RTP audio):',
@@ -1268,7 +1279,7 @@ async function setupServer(config) {
         }
         return true;
       }
-    },
+    }]),
     {
       type: 'input',
       name: 'claudeApiPort',
@@ -1297,7 +1308,7 @@ async function setupServer(config) {
     }
   ]);
 
-  config.server.externalIp = answers.externalIp;
+  config.server.externalIp = ipMode ? 'auto' : answers.externalIp;
   config.server.claudeApiPort = parseInt(answers.claudeApiPort, 10);
   config.server.httpPort = parseInt(answers.httpPort, 10);
 

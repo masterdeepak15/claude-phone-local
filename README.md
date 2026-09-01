@@ -134,6 +134,50 @@ claude mcp add claude-phone --scope user \
   -- node /absolute/path/to/mcp-server/index.js
 ```
 
+## What can you do with this?
+
+Since Claude has real shell access to the host PC, "call your extension" is
+really "call a machine that can run anything on your network." Some
+examples:
+
+### Home automation
+
+- **"Turn off the living room lights and lock the front door."** — if your
+  smart home exposes a CLI, API, or Home Assistant instance on the same
+  network, Claude can hit it directly. No separate voice assistant skill to
+  write.
+- **"Is the garage door open?"** — ask a status question from bed without
+  reaching for an app.
+- **"Call me if the washing machine cycle finishes"** — Claude polls
+  something (a smart plug's power draw, a sensor) in the background while
+  doing other work, then rings you via the [MCP server](docs/MCP-SERVER.md)
+  when it's done.
+- **Multilingual household** — parents ask in Hindi or Marathi, kids ask in
+  English, same extension, same session — see [Languages](#languages).
+
+### Inside a company / office
+
+- **"What's the status of the nightly backup job?"** — ask from your car on
+  the way in, get a real answer pulled from actual logs, not a canned reply.
+- **"Restart the staging server and let me know when it's back up."** —
+  fire-and-forget a real ops task, then Claude calls you back when it's
+  actually done (see [Claude calling you](#claude-calling-you)) instead of
+  you babysitting a terminal.
+- **On-call triage** — "walk me through what's alerting right now" while
+  driving, hands-free, with Claude actually querying your monitoring stack
+  instead of reading a static runbook.
+- **A shared team extension** — dial in from any phone (no app, no VPN
+  client) to ask about deploy status, check disk space on a shared box, or
+  kick off a known-safe script — useful when someone's laptop isn't handy but
+  a phone is.
+- **Slack handoff for long tasks** — ask something that takes a while ("audit
+  every repo for hardcoded secrets"), hang up, and have the results posted to
+  a Slack channel instead of waiting on hold.
+
+None of this requires a PBX-side integration or webhook plumbing — it's the
+same shell access you'd have SSH'd into the box yourself, just reachable from
+any phone that can dial the extension.
+
 ## Configuration
 
 Common knobs in `.env`:
@@ -189,6 +233,8 @@ more: **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**.
 
 ## Documentation
 
+- [docs/SETUP.md](docs/SETUP.md) — full walkthrough: 3CX extension → SBC →
+  Docker → npm install → `claude-phone setup` → `claude-phone start`
 - [CLAUDE.md](CLAUDE.md) — architecture and design decisions
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — every failure mode we hit
 - [docs/LANGUAGES.md](docs/LANGUAGES.md) — Hindi/Marathi setup

@@ -61,17 +61,25 @@ Select this when setting up the Claude API wrapper on a machine with Claude Code
 
 ### Both (All-in-One)
 
-Select this for a single machine running everything.
+Select this for a single machine running everything — most people want this.
+Full prompt-by-prompt walkthrough: [docs/SETUP.md](../docs/SETUP.md).
 
 **What it asks for:**
 1. Local or cloud speech (local = faster-whisper + Piper, no API keys; cloud = ElevenLabs + OpenAI)
-2. 3CX SIP domain and registrar
-3. Device configuration
-4. Server LAN IP, API port, and HTTP port
+2. Whether a 3CX SBC is running on this same PC (auto-avoids its port 5060,
+   and tracks this PC's LAN IP for the registrar automatically)
+3. 3CX SIP domain (and registrar IP, if no local SBC)
+4. Device configuration (name, extension, auth, voice, prompt)
+5. Whether to auto-detect this PC's LAN IP on every `claude-phone start`
+   (recommended — survives network changes without re-running setup), API
+   port, and HTTP port
+6. A callback number for the MCP server (must differ from the device
+   extension — 3CX rejects a device calling itself)
 
 **What `claude-phone start` does:**
 - Starts the `claude-phone` container (drachtio, FreeSWITCH, voice-app, STT, TTS under supervisord)
-- Starts claude-api-server
+- Waits for the voice stack to actually be ready to accept calls
+- Starts claude-api-server and verifies it's healthy before reporting success
 
 ### Pi Auto-Detection
 
