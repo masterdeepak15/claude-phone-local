@@ -1073,18 +1073,6 @@ async function setupDevice(config) {
     },
     {
       type: 'input',
-      name: 'voiceId',
-      message: 'ElevenLabs voice ID:',
-      default: existingDevice?.voiceId || config.api.elevenlabs.defaultVoiceId || '',
-      validate: (input) => {
-        if (!input || input.trim() === '') {
-          return 'Voice ID is required';
-        }
-        return true;
-      }
-    },
-    {
-      type: 'input',
       name: 'prompt',
       message: 'System prompt:',
       default: existingDevice?.prompt || 'You are a helpful AI assistant. Keep voice responses under 40 words.',
@@ -1097,39 +1085,88 @@ async function setupDevice(config) {
     }
   ]);
 
-  // Validate voice ID with ElevenLabs API
-  const voiceSpinner = ora('Validating ElevenLabs voice ID...').start();
-  const voiceValidation = await validateVoiceId(config.api.elevenlabs.apiKey, answers.voiceId);
-
-  if (!voiceValidation.valid) {
-    voiceSpinner.fail(`Voice ID validation failed: ${voiceValidation.error}`);
-    console.log(chalk.yellow('\n⚠️  You can continue setup, but the voice ID may not work.'));
-    const { continueAnyway } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'continueAnyway',
-        message: 'Continue anyway?',
-        default: false
-      }
-    ]);
-
-    if (!continueAnyway) {
-      // Let user re-enter voice ID
-      console.log(chalk.gray('\nReturning to device setup...'));
-      return setupDevice(config);
-    }
-  } else {
-    voiceSpinner.succeed(`Voice ID validated: ${voiceValidation.name}`);
-  }
-
   const device = {
     name: answers.name,
     extension: answers.extension,
     authId: answers.authId,
     password: answers.password,
-    voiceId: answers.voiceId,
     prompt: answers.prompt
   };
+
+  if (config.api.mode === 'local') {
+    // Local mode: ask for a Piper voice name, not an ElevenLabs voice ID.
+    // Falls back to the call-wide default voice picked in setupAPIKeys().
+    const { voice } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'voice',
+        message: 'Piper voice for this device (default: ' + (config.api.local?.voice || 'en_US-lessac-medium') + '):',
+        default: existingDevice?.voice || config.api.local?.voice || 'en_US-lessac-medium'
+      }
+    ]);
+
+    device.voice = voice;
+
+    const voicesDir = path.join(config.paths.ttsLocal, 'voices');
+    const dlSpinner = ora(`Checking Piper voice "${voice}"...`).start();
+    try {
+      const result = await ensureVoiceModel(voice, voicesDir);
+      if (result.downloaded) {
+        dlSpinner.succeed(chalk.green(`Downloaded voice "${voice}"`));
+      } else if (result.skipped) {
+        dlSpinner.succeed(chalk.green(`Voice "${voice}" already present`));
+      } else {
+        dlSpinner.warn(chalk.yellow(result.error));
+      }
+    } catch (error) {
+      dlSpinner.warn(chalk.yellow(`Could not auto-download voice: ${error.message}`));
+      console.log(chalk.gray(
+        `  Known auto-downloadable voices: ${Object.keys(KNOWN_VOICES).join(', ')}\n` +
+        `  For others, place the .onnx + .onnx.json pair in ${voicesDir}/\n`
+      ));
+    }
+  } else {
+    // Cloud mode: original ElevenLabs voice ID flow.
+    const { voiceId } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'voiceId',
+        message: 'ElevenLabs voice ID:',
+        default: existingDevice?.voiceId || config.api.elevenlabs.defaultVoiceId || '',
+        validate: (input) => {
+          if (!input || input.trim() === '') {
+            return 'Voice ID is required';
+          }
+          return true;
+        }
+      }
+    ]);
+
+    const voiceSpinner = ora('Validating ElevenLabs voice ID...').start();
+    const voiceValidation = await validateVoiceId(config.api.elevenlabs.apiKey, voiceId);
+
+    if (!voiceValidation.valid) {
+      voiceSpinner.fail(`Voice ID validation failed: ${voiceValidation.error}`);
+      console.log(chalk.yellow('\n⚠️  You can continue setup, but the voice ID may not work.'));
+      const { continueAnyway } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'continueAnyway',
+          message: 'Continue anyway?',
+          default: false
+        }
+      ]);
+
+      if (!continueAnyway) {
+        console.log(chalk.gray('\nReturning to device setup...'));
+        return setupDevice(config);
+      }
+    } else {
+      voiceSpinner.succeed(`Voice ID validated: ${voiceValidation.name}`);
+    }
+
+    device.voiceId = voiceId;
+  }
 
   // Replace first device or add new
   if (config.devices.length > 0) {
