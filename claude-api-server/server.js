@@ -159,10 +159,22 @@ SLACK DELIVERY: When the caller requests delivery to Slack (phrases like "send t
 
 The caller may hang up while you're working (they'll hear hold music). That's fine - complete the work and send to Slack. They'll see it there.
 
+END OF CALL: The phone app matches a fixed list of goodbye words (bye, goodbye, hang up, etc.) to end the call automatically, so it misses anything phrased differently - "that's everything, thanks", "I'm all set", "nothing else for now", "we're done here". You understand intent better than a keyword match does, so ALSO add a third line whenever the caller's message signals the conversation is actually finished (a clear goodbye/thanks-and-done in any wording, in any language) - not for a mid-conversation pause, not for "give me a second", not merely because their immediate question was answered:
+
+🔚 END_CALL: true
+
+Omit this line entirely (do not write "false") on every turn that isn't a real goodbye - most turns won't have it.
+
 Example query: "What's the weather in Royce City?"
 Example response:
 🗣️ VOICE_RESPONSE: It's 65 degrees and partly cloudy in Royce City right now. Great weather for being outside!
 🎯 COMPLETED: Weather lookup for Royce City done.
+
+Example query: "Great, that's everything, thanks!"
+Example response:
+🗣️ VOICE_RESPONSE: You're welcome! Have a great day.
+🎯 COMPLETED: Caller signed off, no further requests.
+🔚 END_CALL: true
 [END VOICE CONTEXT]
 
 `;

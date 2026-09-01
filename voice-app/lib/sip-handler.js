@@ -163,6 +163,17 @@ function extractVoiceLine(response) {
 }
 
 /**
+ * Whether Claude's raw response signals the conversation is actually over.
+ * Complements isGoodbye()'s fixed phrase match on the caller's own words -
+ * Claude sees the full exchange and can recognize a sign-off phrased in ways
+ * the keyword list doesn't cover ("that's everything, thanks", "I'm all
+ * set"), in any language, without maintaining a growing keyword list.
+ */
+function hasEndCallMarker(response) {
+  return /🔚\s*END_CALL:\s*true/i.test(response);
+}
+
+/**
  * Play a clip the caller is allowed to interrupt.
  *
  * FreeSWITCH plays to completion unless told otherwise, so to support barge-in
@@ -443,6 +454,13 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
         const responseBarge = await playInterruptible(endpoint, session, responseUrl);
         if (responseBarge) {
           pendingUtterance = responseBarge;
+        } else if (hasEndCallMarker(claudeResponse)) {
+          // Claude judged this a real sign-off from the caller's own words
+          // (not just isGoodbye()'s fixed phrase match) - she already said
+          // her goodbye as part of the normal response above, so just end
+          // the call rather than waiting for another turn.
+          console.log('[' + new Date().toISOString() + '] CONVERSATION Claude signaled end of call');
+          break;
         }
       }
 
