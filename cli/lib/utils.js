@@ -51,10 +51,17 @@ export function getLocalIP() {
  * @returns {Promise<boolean>}
  */
 export async function isClaudeInstalled() {
+  // `which` doesn't exist on Windows (it's `where`), and a spawn ENOENT with
+  // no 'error' handler crashes the whole process rather than resolving false.
+  const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
+
   return new Promise((resolve) => {
-    const check = spawn('which', ['claude']);
+    const check = spawn(lookupCmd, ['claude']);
     check.on('close', (code) => {
       resolve(code === 0);
+    });
+    check.on('error', () => {
+      resolve(false);
     });
   });
 }
