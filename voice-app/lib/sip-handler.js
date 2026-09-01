@@ -163,13 +163,20 @@ function extractVoiceLine(response) {
  *
  * FreeSWITCH plays to completion unless told otherwise, so to support barge-in
  * we arm the detector, then issue uuid_break the moment the caller starts
- * talking. Returns true if the caller cut in, so the loop can skip straight to
- * listening instead of finishing what it was saying.
+ * talking. AudioForkSession turns capture on itself right when barge-in
+ * fires (see audio-fork.js), so the words that triggered the interruption are
+ * already becoming a real utterance - previously they were discarded (capture
+ * stayed off during playback) and the caller had to repeat themselves after a
+ * fresh ready-beep on the next turn.
+ *
+ * Returns the captured utterance if the caller interrupted (so the turn loop
+ * can use it as their next input directly, no beep/re-prompt needed), or
+ * `null` if playback completed without interruption.
  */
 async function playInterruptible(endpoint, session, url) {
   if (!session) {
     await endpoint.play(url);
-    return false;
+    return null;
   }
 
   let barged = false;
@@ -187,10 +194,25 @@ async function playInterruptible(endpoint, session, url) {
     session.setBargeInEnabled(false);
     session.removeListener('barge-in', onBarge);
   }
-  if (barged) {
-    console.log('[' + new Date().toISOString() + '] BARGE-IN: caller interrupted, listening now');
+
+  if (!barged) return null;
+
+  console.log('[' + new Date().toISOString() + '] BARGE-IN: caller interrupted, capturing what they said');
+  try {
+    // Capture already started the moment barge-in fired; this just waits for
+    // the utterance to finish (end-of-speech silence) rather than starting a
+    // fresh listen window that would miss the words already spoken.
+    const utterance = await session.waitForUtterance({ timeoutMs: 15000 });
+    // finalizeUtterance() resets utterance state but not captureEnabled -
+    // turn it off now, otherwise every chunk while we transcribe/query
+    // Claude keeps accumulating into a new stray utterance.
+    session.setCaptureEnabled(false);
+    return utterance;
+  } catch (err) {
+    console.log('[' + new Date().toISOString() + '] BARGE-IN: capture failed (' + err.message + '), falling back to a fresh listen');
+    session.setCaptureEnabled(false);
+    return null;
   }
-  return barged;
 }
 
 /**
@@ -253,30 +275,42 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
     // Main conversation loop
     let turnCount = 0;
     const MAX_TURNS = 20;
+    // Speech captured by a barge-in during the previous turn's playback -
+    // consumed as this turn's input directly instead of a fresh ready-beep
+    // and listen window, which would otherwise make the caller repeat
+    // themselves after every interruption.
+    let pendingUtterance = null;
 
     while (turnCount < MAX_TURNS) {
       turnCount++;
       console.log('[' + new Date().toISOString() + '] CONVERSATION Turn ' + turnCount + '/' + MAX_TURNS);
 
-      // READY BEEP
-      try {
-        await endpoint.play(READY_BEEP_URL);
-      } catch (e) {
-        console.log('[' + new Date().toISOString() + '] BEEP: Ready beep failed, continuing');
-      }
-
-      session.setCaptureEnabled(true);
-      console.log('[' + new Date().toISOString() + '] LISTEN Waiting for speech...');
-
       let utterance = null;
-      try {
-        utterance = await session.waitForUtterance({ timeoutMs: 30000 });
-        console.log('[' + new Date().toISOString() + '] LISTEN Got: ' + utterance.audio.length + ' bytes');
-      } catch (err) {
-        console.log('[' + new Date().toISOString() + '] LISTEN Timeout: ' + err.message);
-      }
 
-      session.setCaptureEnabled(false);
+      if (pendingUtterance) {
+        console.log('[' + new Date().toISOString() + '] LISTEN Using speech captured during barge-in: ' + pendingUtterance.audio.length + ' bytes');
+        utterance = pendingUtterance;
+        pendingUtterance = null;
+      } else {
+        // READY BEEP
+        try {
+          await endpoint.play(READY_BEEP_URL);
+        } catch (e) {
+          console.log('[' + new Date().toISOString() + '] BEEP: Ready beep failed, continuing');
+        }
+
+        session.setCaptureEnabled(true);
+        console.log('[' + new Date().toISOString() + '] LISTEN Waiting for speech...');
+
+        try {
+          utterance = await session.waitForUtterance({ timeoutMs: 30000 });
+          console.log('[' + new Date().toISOString() + '] LISTEN Got: ' + utterance.audio.length + ' bytes');
+        } catch (err) {
+          console.log('[' + new Date().toISOString() + '] LISTEN Timeout: ' + err.message);
+        }
+
+        session.setCaptureEnabled(false);
+      }
 
       if (!utterance) {
         const promptUrl = await ttsService.generateSpeech("I didn't hear anything. Are you still there?", turnVoice);
@@ -355,8 +389,13 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
               ? await ttsService.generateSpeech(getRandomWaitingPhrase(), turnVoice)
               : HOLD_MUSIC_URL;
             if (!waiting) break;
-            // Caller can cut through the hold music / filler to add something.
-            if (await playInterruptible(endpoint, session, clipUrl)) {
+            // Caller can cut through the hold music / filler to add
+            // something - captured and queued as the next turn's input once
+            // the in-flight Claude query (already running, can't be
+            // cancelled mid-flight) finishes.
+            const barged = await playInterruptible(endpoint, session, clipUrl);
+            if (barged) {
+              pendingUtterance = barged;
               waiting = false;
               break;
             }
@@ -377,13 +416,24 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
 
       console.log('[' + new Date().toISOString() + '] CLAUDE Response received');
 
-      // Extract and play voice line with device voice
-      const voiceLine = extractVoiceLine(claudeResponse);
-      console.log('[' + new Date().toISOString() + '] VOICE: "' + voiceLine + '"');
+      if (pendingUtterance) {
+        // Caller already interrupted during the wait and started saying
+        // something new - the answer to their original question is now
+        // moot. Skip playing it and let the next loop iteration process
+        // what they're actually saying now, instead of talking over/past it.
+        console.log('[' + new Date().toISOString() + '] VOICE: skipped (caller already interrupted with a new utterance)');
+      } else {
+        // Extract and play voice line with device voice
+        const voiceLine = extractVoiceLine(claudeResponse);
+        console.log('[' + new Date().toISOString() + '] VOICE: "' + voiceLine + '"');
 
-      const responseUrl = await ttsService.generateSpeech(voiceLine, turnVoice);
-      // Long answers are the usual thing people want to interrupt.
-      await playInterruptible(endpoint, session, responseUrl);
+        const responseUrl = await ttsService.generateSpeech(voiceLine, turnVoice);
+        // Long answers are the usual thing people want to interrupt.
+        const responseBarge = await playInterruptible(endpoint, session, responseUrl);
+        if (responseBarge) {
+          pendingUtterance = responseBarge;
+        }
+      }
 
       console.log('[' + new Date().toISOString() + '] CONVERSATION Turn ' + turnCount + ' complete');
     }

@@ -278,6 +278,14 @@ class AudioForkSession extends EventEmitter {
         this.bargeInEnabled = false;
         console.log('[AUDIO-DEBUG] BARGE-IN detected (RMS=' + Math.round(stats.rms) + ') for ' + this.callUuid);
         this.emit('barge-in');
+        // Barge-in used to only stop playback - the words that triggered it,
+        // and everything the caller kept saying until the turn loop's next
+        // setCaptureEnabled(true), were silently discarded because capture
+        // stayed off the whole time. Turn capture on immediately so this
+        // chunk (already loud speech, just confirmed above) and what follows
+        // fall through into real utterance capture below instead of being
+        // dropped and forcing the caller to repeat themselves.
+        this.captureEnabled = true;
       }
     }
 
