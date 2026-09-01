@@ -24,9 +24,13 @@ const FILE_MAX_AGE = 600000;
  *
  * @param {string} audioDir - Directory to serve audio files from
  * @param {number} port - Port to listen on (default: 3000)
+ * @param {() => boolean} [getReadiness] - Returns whether drachtio + FreeSWITCH
+ *   are both connected. /health reflects this instead of always reporting
+ *   healthy, so `claude-phone start` can actually wait for the stack to be
+ *   able to accept calls instead of guessing with a fixed sleep.
  * @returns {Object} { app, server, saveAudio, getAudioUrl, close, finalize }
  */
-function createHttpServer(audioDir, port = 3000) {
+function createHttpServer(audioDir, port = 3000, getReadiness) {
   const app = express();
 
   // Parse JSON bodies
@@ -58,10 +62,14 @@ function createHttpServer(audioDir, port = 3000) {
     }
   }));
 
-  // Health check endpoint
+  // Health check endpoint. `ready` reflects whether drachtio + FreeSWITCH are
+  // both connected - the process being up and able to accept calls are not
+  // the same thing, and a caller landing in the gap gets a SIP 503.
   app.get('/health', (req, res) => {
+    const ready = typeof getReadiness === 'function' ? getReadiness() : true;
     res.json({
       status: 'healthy',
+      ready,
       timestamp: new Date().toISOString(),
       audioDir,
       port

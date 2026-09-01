@@ -107,3 +107,42 @@ export async function checkClaudeApiServer(url) {
     }
   });
 }
+
+/**
+ * Poll voice-app's /health until it reports drachtio + FreeSWITCH both
+ * connected, or the timeout elapses. Fixes `claude-phone start` reporting
+ * "All services running!" while FreeSWITCH is still booting - a call landing
+ * in that gap gets a SIP 503 and falls through to the 3CX generic voicemail
+ * prompt instead of ever reaching the app.
+ * @param {string} url - voice-app base URL (e.g. http://localhost:3000)
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=30000] - Give up after this long
+ * @param {number} [opts.intervalMs=1000] - Poll interval
+ * @returns {Promise<{ready: boolean, timedOut: boolean}>}
+ */
+export async function waitForVoiceAppReady(url, { timeoutMs = 30000, intervalMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const ready = await new Promise((resolve) => {
+      const req = http.get(url + '/health', { timeout: 3000 }, (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try {
+            resolve(Boolean(JSON.parse(body).ready));
+          } catch {
+            resolve(false);
+          }
+        });
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+    });
+
+    if (ready) return { ready: true, timedOut: false };
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  return { ready: false, timedOut: true };
+}

@@ -118,7 +118,7 @@ console.log('[STARTUP] API keys loaded:', apiKeys.join(', '));
 const sessions = new Map();
 
 // Model selection - Sonnet for balanced speed/quality
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
 
 function parseClaudeStdout(stdout) {
   // Claude Code CLI may output JSONL; when it does, extract the `result` message.

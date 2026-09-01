@@ -178,7 +178,7 @@ function initializeServers() {
   }
 
   // HTTP server for TTS audio
-  httpServer = createHttpServer(config.audio_dir, config.http_port);
+  httpServer = createHttpServer(config.audio_dir, config.http_port, function () { return isReady; });
   console.log("[" + new Date().toISOString() + "] HTTP Server started on port " + config.http_port);
 
   // WebSocket server for audio fork

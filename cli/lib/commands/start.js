@@ -5,8 +5,8 @@ import path from 'path';
 import { loadConfig, configExists, getInstallationType } from '../config.js';
 import { checkDocker, writeDockerConfig, startContainers } from '../docker.js';
 import { startServer, isServerRunning } from '../process-manager.js';
-import { isClaudeInstalled, sleep } from '../utils.js';
-import { checkClaudeApiServer } from '../network.js';
+import { isClaudeInstalled } from '../utils.js';
+import { checkClaudeApiServer, waitForVoiceAppReady } from '../network.js';
 import { runPrereqChecks } from '../prereqs.js';
 
 /**
@@ -184,10 +184,16 @@ async function startVoiceServer(config, isPiMode) {
     throw error;
   }
 
-  // Wait a bit for containers to initialize
-  spinner.start('Waiting for containers to initialize...');
-  await sleep(3000);
-  spinner.succeed('Containers initialized');
+  // Wait for FreeSWITCH to actually be ready to accept calls, not just for
+  // the container process to be up. A call landing in that gap gets a SIP
+  // 503 and falls through to 3CX's generic voicemail prompt.
+  spinner.start('Waiting for voice services to be ready...');
+  const readiness = await waitForVoiceAppReady(`http://localhost:${config.server.httpPort}`);
+  if (readiness.ready) {
+    spinner.succeed('Voice services ready');
+  } else {
+    spinner.warn('Voice services did not report ready in time - calls may briefly fail while it finishes starting');
+  }
 
   // Success
   console.log(chalk.bold.green('\n✓ Voice server running!\n'));
@@ -307,10 +313,16 @@ async function startBoth(config, isPiMode) {
     throw error;
   }
 
-  // Wait a bit for containers to initialize
-  spinner.start('Waiting for containers to initialize...');
-  await sleep(3000);
-  spinner.succeed('Containers initialized');
+  // Wait for FreeSWITCH to actually be ready to accept calls, not just for
+  // the container process to be up. A call landing in that gap gets a SIP
+  // 503 and falls through to 3CX's generic voicemail prompt.
+  spinner.start('Waiting for voice services to be ready...');
+  const readiness = await waitForVoiceAppReady(`http://localhost:${config.server.httpPort}`);
+  if (readiness.ready) {
+    spinner.succeed('Voice services ready');
+  } else {
+    spinner.warn('Voice services did not report ready in time - calls may briefly fail while it finishes starting');
+  }
 
   // Start claude-api-server (only in standard mode - Pi mode uses remote API server)
   if (!isPiMode) {
