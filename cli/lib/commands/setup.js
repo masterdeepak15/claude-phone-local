@@ -233,11 +233,34 @@ async function setupInstallationType(installationType, existingConfig, isPi, opt
   // than in postinstall because only now do we know which extension to ring.
   if (installationType !== 'api-server') {
     console.log(chalk.bold('\nMCP server (lets Claude call you)'));
-    const firstDevice = config.devices && Object.keys(config.devices).length
-      ? Object.values(config.devices)[0]
-      : null;
+
+    const answeringExtension = config.devices?.[0]?.extension;
+    const { callbackNumber } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'callbackNumber',
+        message: 'Number/extension for Claude to call YOU on (must be different ' +
+          `from ${answeringExtension || 'the device extension'} above - 3CX rejects ` +
+          'a device calling itself):',
+        default: config.sip?.callbackNumber || '',
+        validate: (input) => {
+          if (!input || input.trim() === '') {
+            return 'A callback number is required for Claude to call you';
+          }
+          if (answeringExtension && input.trim() === answeringExtension) {
+            return `Must differ from ${answeringExtension} - that number answers as ` +
+              'Maya, so calling it from itself is rejected by 3CX as a self-call.';
+          }
+          return true;
+        }
+      }
+    ]);
+
+    config.sip.callbackNumber = callbackNumber.trim();
+    await saveConfig(config);
+
     registerMcpServerWithOutput({
-      defaultTo: config.sip?.callbackNumber || firstDevice?.extension || config.sip?.extension,
+      defaultTo: config.sip.callbackNumber,
       httpPort: config.server?.httpPort || 3000,
     });
   }
