@@ -263,6 +263,33 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
     ? "Hello! I'm " + deviceConfig.name + ". How can I help you today?"
     : "Hello! I'm your server. How can I help you today?";
 
+  // Play a clip, then go straight into listening - no beep, no separate
+  // "ready" phase. The caller can start talking the instant she stops (or
+  // interrupt her mid-clip; playInterruptible already supports that and
+  // capture only turns on inside audio-fork the moment barge-in actually
+  // fires, so her own voice mixed into the mono fork is never mistaken for
+  // speech). This replaces the old push-to-talk-after-tone flow, where
+  // capture was only ever enabled during one narrow beep-gated window and
+  // every other second of the call - her talking, hold music, the dead gap
+  // right after she finished - was silence the caller could not be heard in.
+  async function speakThenListen(url, { timeoutMs = 30000 } = {}) {
+    const barged = await playInterruptible(endpoint, session, url);
+    if (barged) return barged;
+
+    session.setCaptureEnabled(true);
+    console.log('[' + new Date().toISOString() + '] LISTEN Waiting for speech...');
+    try {
+      const utterance = await session.waitForUtterance({ timeoutMs });
+      console.log('[' + new Date().toISOString() + '] LISTEN Got: ' + utterance.audio.length + ' bytes');
+      return utterance;
+    } catch (err) {
+      console.log('[' + new Date().toISOString() + '] LISTEN Timeout: ' + err.message);
+      return null;
+    } finally {
+      session.setCaptureEnabled(false);
+    }
+  }
+
   try {
     console.log('[' + new Date().toISOString() + '] CONVERSATION Starting (session: ' + callUuid + ', device: ' + deviceName + ', voice: ' + voiceId + ')...');
 
@@ -296,53 +323,38 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
     let turnCount = 0;
     const MAX_TURNS = 20;
     // Speech captured by a barge-in during the previous turn's playback -
-    // consumed as this turn's input directly instead of a fresh ready-beep
-    // and listen window, which would otherwise make the caller repeat
-    // themselves after every interruption.
+    // consumed as this turn's input directly instead of another listen
+    // window, which would otherwise make the caller repeat themselves after
+    // every interruption.
     let pendingUtterance = null;
+
+    // First listen of the call - straight after the greeting, no beep.
+    session.setCaptureEnabled(true);
+    console.log('[' + new Date().toISOString() + '] LISTEN Waiting for speech...');
+    let utterance = null;
+    try {
+      utterance = await session.waitForUtterance({ timeoutMs: 30000 });
+      console.log('[' + new Date().toISOString() + '] LISTEN Got: ' + utterance.audio.length + ' bytes');
+    } catch (err) {
+      console.log('[' + new Date().toISOString() + '] LISTEN Timeout: ' + err.message);
+    } finally {
+      session.setCaptureEnabled(false);
+    }
 
     while (turnCount < MAX_TURNS) {
       turnCount++;
       console.log('[' + new Date().toISOString() + '] CONVERSATION Turn ' + turnCount + '/' + MAX_TURNS);
 
-      let utterance = null;
-
       if (pendingUtterance) {
         console.log('[' + new Date().toISOString() + '] LISTEN Using speech captured during barge-in: ' + pendingUtterance.audio.length + ' bytes');
         utterance = pendingUtterance;
         pendingUtterance = null;
-      } else {
-        // READY BEEP
-        try {
-          await endpoint.play(READY_BEEP_URL);
-        } catch (e) {
-          console.log('[' + new Date().toISOString() + '] BEEP: Ready beep failed, continuing');
-        }
-
-        session.setCaptureEnabled(true);
-        console.log('[' + new Date().toISOString() + '] LISTEN Waiting for speech...');
-
-        try {
-          utterance = await session.waitForUtterance({ timeoutMs: 30000 });
-          console.log('[' + new Date().toISOString() + '] LISTEN Got: ' + utterance.audio.length + ' bytes');
-        } catch (err) {
-          console.log('[' + new Date().toISOString() + '] LISTEN Timeout: ' + err.message);
-        }
-
-        session.setCaptureEnabled(false);
       }
 
       if (!utterance) {
         const promptUrl = await ttsService.generateSpeech("I didn't hear anything. Are you still there?", turnVoice);
-        await endpoint.play(promptUrl);
+        utterance = await speakThenListen(promptUrl);
         continue;
-      }
-
-      // GOT-IT BEEP
-      try {
-        await endpoint.play(GOTIT_BEEP_URL);
-      } catch (e) {
-        console.log('[' + new Date().toISOString() + '] BEEP: Got-it beep failed, continuing');
       }
 
       // Transcribe (language auto-detected unless STT_LANGUAGE pins one)
@@ -367,7 +379,7 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
 
       if (!transcript || transcript.trim().length < 2) {
         const clarifyUrl = await ttsService.generateSpeech("Sorry, I didn't catch that. Could you repeat?", turnVoice);
-        await endpoint.play(clarifyUrl);
+        utterance = await speakThenListen(clarifyUrl);
         continue;
       }
 
@@ -438,30 +450,35 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
 
       console.log('[' + new Date().toISOString() + '] CLAUDE Response received');
 
+      utterance = null;
+
       if (pendingUtterance) {
         // Caller already interrupted during the wait and started saying
         // something new - the answer to their original question is now
-        // moot. Skip playing it and let the next loop iteration process
-        // what they're actually saying now, instead of talking over/past it.
+        // moot. Skip playing it and pick this utterance straight up as the
+        // next turn's input, instead of talking over/past it.
         console.log('[' + new Date().toISOString() + '] VOICE: skipped (caller already interrupted with a new utterance)');
+        utterance = pendingUtterance;
+        pendingUtterance = null;
+      } else if (hasEndCallMarker(claudeResponse)) {
+        // Claude judged this a real sign-off from the caller's own words
+        // (not just isGoodbye()'s fixed phrase match) - play her answer
+        // (which already includes the goodbye) without listening again, then
+        // end the call.
+        const voiceLine = extractVoiceLine(claudeResponse);
+        console.log('[' + new Date().toISOString() + '] VOICE: "' + voiceLine + '"');
+        const responseUrl = await ttsService.generateSpeech(voiceLine, turnVoice);
+        await endpoint.play(responseUrl);
+        console.log('[' + new Date().toISOString() + '] CONVERSATION Claude signaled end of call');
+        break;
       } else {
-        // Extract and play voice line with device voice
+        // Extract and play voice line with device voice, then go straight
+        // into listening for the reply - no beep, no gap.
         const voiceLine = extractVoiceLine(claudeResponse);
         console.log('[' + new Date().toISOString() + '] VOICE: "' + voiceLine + '"');
 
         const responseUrl = await ttsService.generateSpeech(voiceLine, turnVoice);
-        // Long answers are the usual thing people want to interrupt.
-        const responseBarge = await playInterruptible(endpoint, session, responseUrl);
-        if (responseBarge) {
-          pendingUtterance = responseBarge;
-        } else if (hasEndCallMarker(claudeResponse)) {
-          // Claude judged this a real sign-off from the caller's own words
-          // (not just isGoodbye()'s fixed phrase match) - she already said
-          // her goodbye as part of the normal response above, so just end
-          // the call rather than waiting for another turn.
-          console.log('[' + new Date().toISOString() + '] CONVERSATION Claude signaled end of call');
-          break;
-        }
+        utterance = await speakThenListen(responseUrl);
       }
 
       console.log('[' + new Date().toISOString() + '] CONVERSATION Turn ' + turnCount + ' complete');
