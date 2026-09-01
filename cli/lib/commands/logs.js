@@ -1,8 +1,8 @@
 import chalk from 'chalk';
 import { spawn } from 'child_process';
-import axios from 'axios';
-import { loadConfig, configExists, getDockerComposePath, getPidPath } from '../config.js';
+import { loadConfig, configExists, getDockerComposePath, getPidPath, getConfigDir } from '../config.js';
 import fs from 'fs';
+import path from 'path';
 
 /**
  * Logs command - Tail service logs
@@ -104,49 +104,53 @@ function tailDockerLogs(dockerComposePath) {
 
 /**
  * Tail API server logs
- * @param {object} config - Configuration object
+ * @param {object} _config - Configuration object (unused; log path is fixed)
  */
-function tailAPIServerLogs(config) {
-  console.log(chalk.gray('Watching Claude API server output...\n'));
+function tailAPIServerLogs(_config) {
+  const logPath = path.join(getConfigDir(), 'claude-api-server.log');
 
-  // Since the server runs detached, we can't easily tail its logs
-  // Instead, we'll monitor its health endpoint
-  console.log(chalk.yellow('Note: API server logs are not available (runs detached)'));
-  console.log(chalk.gray('Monitoring health endpoint instead...\n'));
+  if (!fs.existsSync(logPath)) {
+    console.log(chalk.yellow('⚠ No log file yet - the API server has not written any output'));
+    console.log(chalk.gray(`  Expected at: ${logPath}\n`));
+    process.exit(1);
+  }
 
-  let consecutiveFailures = 0;
+  console.log(chalk.gray(`Watching ${logPath}\n`));
 
-  const checkHealth = async () => {
+  // Print the last ~50 lines, then follow new writes. No native `tail -f` on
+  // Windows, so poll the file size and read only the appended bytes.
+  const fullContent = fs.readFileSync(logPath, 'utf8');
+  const lines = fullContent.split('\n');
+  const tailLines = lines.slice(Math.max(0, lines.length - 50));
+  process.stdout.write(tailLines.join('\n'));
+
+  let position = fs.statSync(logPath).size;
+
+  const poll = setInterval(() => {
     try {
-      const response = await axios.get(`http://localhost:${config.server.claudeApiPort}/health`, {
-        timeout: 3000
-      });
-
-      if (response.status === 200) {
-        console.log(chalk.green(`[${new Date().toISOString()}] ✓ API server healthy`));
-        consecutiveFailures = 0;
-      } else {
-        console.log(chalk.yellow(`[${new Date().toISOString()}] ⚠ Unexpected status: ${response.status}`));
+      const { size } = fs.statSync(logPath);
+      if (size < position) {
+        // Log file was rotated/truncated (e.g. by a restart) - start over.
+        position = 0;
       }
-    } catch (error) {
-      consecutiveFailures++;
-      console.log(chalk.red(`[${new Date().toISOString()}] ✗ Health check failed: ${error.message}`));
-
-      if (consecutiveFailures >= 3) {
-        console.log(chalk.red('\n✗ API server appears to be down. Stopping health checks.\n'));
-        process.exit(1);
+      if (size > position) {
+        const fd = fs.openSync(logPath, 'r');
+        const buffer = Buffer.alloc(size - position);
+        fs.readSync(fd, buffer, 0, buffer.length, position);
+        fs.closeSync(fd);
+        process.stdout.write(buffer.toString('utf8'));
+        position = size;
       }
+    } catch (err) {
+      console.log(chalk.red(`\n✗ Lost access to log file: ${err.message}\n`));
+      clearInterval(poll);
+      process.exit(1);
     }
-  };
+  }, 1000);
 
-  // Check immediately, then every 5 seconds
-  checkHealth();
-  const interval = setInterval(checkHealth, 5000);
-
-  // Handle Ctrl+C
   process.on('SIGINT', () => {
-    clearInterval(interval);
-    console.log(chalk.gray('\n\nStopped monitoring API server.\n'));
+    clearInterval(poll);
+    console.log(chalk.gray('\n\nStopped tailing logs.\n'));
     process.exit(0);
   });
 }
@@ -157,7 +161,7 @@ function tailAPIServerLogs(config) {
  * @param {object} _config - Configuration object (unused)
  */
 function tailBothServices(dockerComposePath, _config) {
-  console.log(chalk.gray('Showing Docker container logs (API server logs not available)\n'));
+  console.log(chalk.gray('Showing Docker container logs. Run "claude-phone logs api-server" separately for the host-side API server log.\n'));
 
   const child = spawn('docker', [
     'compose',

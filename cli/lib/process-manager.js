@@ -70,16 +70,25 @@ export async function startServer(serverPath, port, pidPath = null) {
   }
 
   return new Promise((resolve, reject) => {
+    // Redirect stdout/stderr to a log file instead of discarding them - this
+    // process's own console.log is the only place query timing, session
+    // tracking, and CLI/SDK errors are visible; with stdio: 'ignore' there
+    // was no way to diagnose a slow or failed call after the fact.
+    const logPath = path.join(getConfigDir(), 'claude-api-server.log');
+    const logFd = fs.openSync(logPath, 'a');
+
     // Spawn detached process
     const child = spawn('node', ['server.js'], {
       cwd: serverPath,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', logFd, logFd],
       env: {
         ...process.env,
         PORT: port
       }
     });
+
+    fs.closeSync(logFd); // child holds its own reference to the fd via dup()
 
     // Don't wait for child process
     child.unref();
