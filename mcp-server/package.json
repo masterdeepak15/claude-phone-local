@@ -5,5 +5,8 @@
   "type": "module",
   "bin": {
     "claude-phone-mcp": "./index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
   }
 }
