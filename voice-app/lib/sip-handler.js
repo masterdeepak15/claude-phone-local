@@ -77,6 +77,10 @@ function getRandomThinkingPhrase() {
   return THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)];
 }
 
+function getRandomWaitingPhrase() {
+  return WAITING_PHRASES[Math.floor(Math.random() * WAITING_PHRASES.length)];
+}
+
 function extractCallerId(req) {
   var from = req.get("From") || "";
   var match = from.match(/sip:([+\d]+)@/);
