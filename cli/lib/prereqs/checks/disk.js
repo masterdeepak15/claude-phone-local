@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 /**
  * Check disk space availability
@@ -80,6 +80,34 @@ function getDiskSpace(platform) {
         const availableKB = parseInt(parts[3], 10);
         return availableKB * 1024; // Convert KB to bytes
       }
+
+      return null;
+    }
+
+    if (platform.os === 'win32') {
+      // Check the drive the CLI's config directory (~/.claude-phone) lives on,
+      // since that's where the ./data volume actually gets written - not
+      // necessarily the same drive as the OS install.
+      const driveLetter = (process.env.USERPROFILE || process.env.HOMEDRIVE || 'C:')
+        .slice(0, 2)
+        .toUpperCase();
+
+      // wmic is deprecated but still present on every supported Windows
+      // release; avoids a PowerShell startup cost on every prereq check.
+      // execFileSync (argument array, no shell) - driveLetter is untrusted
+      // env-derived input, so it must not be interpolated into a shell string.
+      const output = execFileSync(
+        'wmic',
+        ['logicaldisk', 'where', `DeviceID='${driveLetter}'`, 'get', 'FreeSpace', '/value'],
+        { encoding: 'utf-8', stdio: 'pipe' }
+      );
+
+      const match = output.match(/FreeSpace=(\d+)/);
+      if (match) {
+        return parseInt(match[1], 10);
+      }
+
+      return null;
     }
 
     return null;
