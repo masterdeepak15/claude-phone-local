@@ -131,7 +131,12 @@ router.post('/outbound-call', async function(req, res) {
     var timeoutSeconds = req.body.timeoutSeconds || 30;
     var webhookUrl = req.body.webhookUrl;
 
-    // Look up device configuration
+    // Look up device configuration. This also decides the outbound SIP
+    // identity/credentials (see initiateOutboundCall) - without a device, the
+    // call goes out as a hardcoded placeholder caller ID that 3CX has never
+    // provisioned and rejects with 403. Default to the registered device
+    // (Maya) rather than leaving deviceConfig null, since it's the only
+    // identity actually authorized to place calls on this SBC.
     var deviceConfig = null;
     if (deviceParam && deviceRegistry) {
       // Use get() which tries extension first, then name (case-insensitive)
@@ -145,6 +150,23 @@ router.post('/outbound-call', async function(req, res) {
         });
       } else {
         logger.warn('Device not found, using default', { requested: deviceParam });
+      }
+    }
+
+    if (!deviceConfig && deviceRegistry) {
+      // getDefault() returns a hardcoded placeholder (fake ext 9000, fake
+      // creds) left over from the upstream fork - using it here would trade
+      // one unauthorized SIP identity for another. Use the first actually
+      // configured device instead, since that's a real registered identity
+      // this SBC will accept.
+      var allDevices = deviceRegistry.getAllDevices ? deviceRegistry.getAllDevices() : {};
+      var firstConfiguredDevice = Object.values(allDevices)[0] || null;
+      if (firstConfiguredDevice) {
+        deviceConfig = firstConfiguredDevice;
+        logger.info('No device specified, using first configured device for outbound identity', {
+          device: deviceConfig.name,
+          extension: deviceConfig.extension
+        });
       }
     }
 
