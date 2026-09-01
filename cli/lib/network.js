@@ -109,6 +109,33 @@ export async function checkClaudeApiServer(url) {
 }
 
 /**
+ * Poll claude-api-server's /health until it responds, or the timeout
+ * elapses. startServer() only confirms the process was spawned (got a PID) -
+ * not that it actually bound its port and stayed up. A crash right after
+ * spawn (e.g. EADDRINUSE from a stale process already on that port) was
+ * previously reported as "✔ Claude API server started" and "✓ All services
+ * running!" with no indication anything was wrong.
+ * @param {string} url - claude-api-server base URL (e.g. http://localhost:3333)
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=10000] - Give up after this long
+ * @param {number} [opts.intervalMs=500] - Poll interval
+ * @returns {Promise<{healthy: boolean, timedOut: boolean, error?: string}>}
+ */
+export async function waitForClaudeApiServerReady(url, { timeoutMs = 10000, intervalMs = 500 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+
+  while (Date.now() < deadline) {
+    const result = await checkClaudeApiServer(url);
+    if (result.reachable && result.healthy) return { healthy: true, timedOut: false };
+    lastError = result.error;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  return { healthy: false, timedOut: true, error: lastError };
+}
+
+/**
  * Poll voice-app's /health until it reports drachtio + FreeSWITCH both
  * connected, or the timeout elapses. Fixes `claude-phone start` reporting
  * "All services running!" while FreeSWITCH is still booting - a call landing

@@ -6,7 +6,7 @@ import { loadConfig, configExists, getInstallationType } from '../config.js';
 import { checkDocker, writeDockerConfig, startContainers } from '../docker.js';
 import { startServer, isServerRunning } from '../process-manager.js';
 import { isClaudeInstalled } from '../utils.js';
-import { checkClaudeApiServer, waitForVoiceAppReady } from '../network.js';
+import { checkClaudeApiServer, waitForVoiceAppReady, waitForClaudeApiServerReady } from '../network.js';
 import { runPrereqChecks } from '../prereqs.js';
 
 /**
@@ -91,7 +91,17 @@ async function startApiServer(config) {
       spinner.warn('Claude API server already running');
     } else {
       await startServer(config.paths.claudeApiServer, config.server.claudeApiPort);
-      spinner.succeed(`Claude API server started on port ${config.server.claudeApiPort}`);
+      // startServer only confirms the process was spawned, not that it
+      // actually bound its port and stayed up (e.g. a stale process already
+      // on that port crashes it with EADDRINUSE within milliseconds).
+      const readiness = await waitForClaudeApiServerReady(`http://localhost:${config.server.claudeApiPort}`);
+      if (readiness.healthy) {
+        spinner.succeed(`Claude API server started on port ${config.server.claudeApiPort}`);
+      } else {
+        spinner.fail(`Claude API server did not become healthy: ${readiness.error || 'timed out'}`);
+        console.log(chalk.yellow(`\n  Check the log: claude-phone logs api-server\n`));
+        process.exit(1);
+      }
     }
   } catch (error) {
     spinner.fail(`Failed to start server: ${error.message}`);
@@ -332,7 +342,17 @@ async function startBoth(config, isPiMode) {
         spinner.warn('Claude API server already running');
       } else {
         await startServer(config.paths.claudeApiServer, config.server.claudeApiPort);
-        spinner.succeed(`Claude API server started on port ${config.server.claudeApiPort}`);
+        // startServer only confirms the process was spawned, not that it
+        // actually bound its port and stayed up (e.g. a stale process
+        // already on that port crashes it with EADDRINUSE within ms).
+        const apiReadiness = await waitForClaudeApiServerReady(`http://localhost:${config.server.claudeApiPort}`);
+        if (apiReadiness.healthy) {
+          spinner.succeed(`Claude API server started on port ${config.server.claudeApiPort}`);
+        } else {
+          spinner.fail(`Claude API server did not become healthy: ${apiReadiness.error || 'timed out'}`);
+          console.log(chalk.yellow(`\n  Check the log: claude-phone logs api-server\n`));
+          process.exit(1);
+        }
       }
     } catch (error) {
       spinner.fail(`Failed to start server: ${error.message}`);
