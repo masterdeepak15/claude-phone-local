@@ -193,7 +193,12 @@ async function playInterruptible(endpoint, session, url) {
   session.once('barge-in', onBarge);
   session.setBargeInEnabled(true);
   try {
-    await endpoint.play(url);
+    console.log('[' + new Date().toISOString() + '] PLAY (interruptible): ' + url);
+    const playResult = await endpoint.play(url);
+    console.log('[' + new Date().toISOString() + '] PLAY complete: ' + url + ' result=' + JSON.stringify(playResult));
+  } catch (playErr) {
+    console.log('[' + new Date().toISOString() + '] PLAY FAILED: ' + url + ' error=' + playErr.message);
+    throw playErr;
   } finally {
     session.setBargeInEnabled(false);
     session.removeListener('barge-in', onBarge);
@@ -388,8 +393,10 @@ async function conversationLoop(endpoint, dialog, callUuid, options, deviceConfi
         let round = 0;
         while (waiting) {
           round++;
+          const isSpeakRound = round % SPEAK_EVERY === 0;
+          console.log('[' + new Date().toISOString() + '] KEEPALIVE round ' + round + ': ' + (isSpeakRound ? 'speech' : 'hold music'));
           try {
-            const clipUrl = (round % SPEAK_EVERY === 0)
+            const clipUrl = isSpeakRound
               ? await ttsService.generateSpeech(getRandomWaitingPhrase(), turnVoice)
               : HOLD_MUSIC_URL;
             if (!waiting) break;
