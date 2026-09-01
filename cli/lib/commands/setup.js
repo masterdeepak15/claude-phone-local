@@ -382,8 +382,19 @@ async function setupVoiceServer(config) {
   // Step 5: Server Configuration (IP only, no API port)
   console.log(chalk.bold('\n⚙️  Server Configuration'));
   const localIp = getLocalIP();
-  const serverAnswers = await inquirer.prompt([
+  const { ipMode } = await inquirer.prompt([
     {
+      type: 'confirm',
+      name: 'ipMode',
+      message: `Auto-detect the LAN IP on every "claude-phone start" (currently ${localIp})? ` +
+        'Recommended if this machine moves networks (laptop, DHCP) - answering ' +
+        'no locks in a fixed IP that goes stale the next time it changes.',
+      default: config.server.externalIp === 'auto' || config.server.externalIp === undefined
+    }
+  ]);
+
+  const serverAnswers = await inquirer.prompt([
+    ...(ipMode ? [] : [{
       type: 'input',
       name: 'externalIp',
       message: 'Server LAN IP (for RTP audio):',
@@ -397,7 +408,7 @@ async function setupVoiceServer(config) {
         }
         return true;
       }
-    },
+    }]),
     {
       type: 'input',
       name: 'httpPort',
@@ -413,7 +424,7 @@ async function setupVoiceServer(config) {
     }
   ]);
 
-  config.server.externalIp = serverAnswers.externalIp;
+  config.server.externalIp = ipMode ? 'auto' : serverAnswers.externalIp;
   config.server.httpPort = parseInt(serverAnswers.httpPort, 10);
 
   return config;
