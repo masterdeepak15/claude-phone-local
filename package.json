@@ -1,6 +1,6 @@
 {
   "name": "claude-phone-local",
-  "version": "2.0.11",
+  "version": "2.0.12",
   "description": "Local/offline fork of NetworkChuck's claude-phone: talk to Claude Code over 3CX/SIP with faster-whisper STT + Piper TTS in one Docker container.",
   "type": "module",
   "bin": {

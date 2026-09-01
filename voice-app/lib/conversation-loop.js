@@ -22,7 +22,7 @@ const AUDIO_WS_HOST = new URL(AUDIO_BASE_URL).hostname;
 // Audio cue URLs
 const READY_BEEP_URL = `${AUDIO_BASE_URL}/static/ready-beep.wav`;
 const GOTIT_BEEP_URL = `${AUDIO_BASE_URL}/static/gotit-beep.wav`;
-const HOLD_MUSIC_URL = `${AUDIO_BASE_URL}/static/hold-music.mp3`;
+const HOLD_MUSIC_URL = `${AUDIO_BASE_URL}/static/hold-music.wav`;
 
 // Claude Code-style thinking phrases
 const THINKING_PHRASES = [

@@ -120,7 +120,7 @@ export async function checkClaudeApiServer(url) {
  * @param {number} [opts.intervalMs=1000] - Poll interval
  * @returns {Promise<{ready: boolean, timedOut: boolean}>}
  */
-export async function waitForVoiceAppReady(url, { timeoutMs = 30000, intervalMs = 1000 } = {}) {
+export async function waitForVoiceAppReady(url, { timeoutMs = 60000, intervalMs = 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
