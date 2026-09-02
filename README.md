@@ -36,6 +36,12 @@ Manual, one time:
 - **Claude Code CLI**, logged in — `claude --version`
 - **Node.js 18+** on the host, for `claude-api-server`
 - A **SIP extension** on 3CX (or any SIP PBX)
+- **3CX Session Border Controller (SBC)** installed on this PC — required
+  unless this machine is already on the same LAN as your 3CX PBX with no
+  NAT/firewall in between. Most setups need it. `claude-phone setup` detects
+  it automatically and configures around it (moves drachtio to port 5070 to
+  avoid the SBC's port 5060). Full instructions: [docs/SETUP.md § Install the
+  3CX SBC](docs/SETUP.md#2-install-the-3cx-sbc-only-if-needed).
 
 Everything else — speech models, voices, device config — is downloaded and
 generated automatically on first run.
