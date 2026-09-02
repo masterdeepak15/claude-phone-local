@@ -42,6 +42,26 @@ generated automatically on first run.
 
 ## Quick start
 
+The npm CLI is the recommended path — it installs, prompts you through 3CX/
+device config, and starts everything (including the host-side Claude wrapper)
+for you:
+
+```bash
+npm install -g claude-phone-local
+claude-phone setup     # interactive: 3CX domain, extension, speech mode, etc.
+claude-phone start     # builds + launches everything, including claude-api-server
+```
+
+When you see `✓ All services running!` with your extension listed, call it.
+Full prompt-by-prompt walkthrough (3CX extension → SBC → Docker → npm install
+→ setup → start): **[docs/SETUP.md](docs/SETUP.md)**.
+
+<details>
+<summary>Manual / dev setup (git clone + docker compose)</summary>
+
+For local development on this repo, or if you'd rather manage `.env` and
+`docker compose` by hand instead of the CLI:
+
 ```bash
 git clone <your-fork> claude-phone-local
 cd claude-phone-local
@@ -75,6 +95,8 @@ When you see this, call your extension:
 ```
 [MULTI-REGISTRAR] Maya SUCCESS - Registered as ext 17512
 ```
+
+</details>
 
 ## Architecture
 
