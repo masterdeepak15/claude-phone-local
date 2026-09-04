@@ -118,17 +118,6 @@ function buildClaudeEnvironment() {
 
 // Pre-build the environment once at startup
 const claudeEnv = buildClaudeEnvironment();
-console.log('[STARTUP] Loaded environment with', Object.keys(claudeEnv).length, 'variables');
-console.log('[STARTUP] PATH includes:', claudeEnv.PATH.split(':').slice(0, 5).join(', '), '...');
-
-// Log which API keys are available (without showing values)
-const apiKeys = Object.keys(claudeEnv).filter(k =>
-  k.includes('API_KEY') || k.includes('TOKEN') || k.includes('SECRET') || k === 'PAI_DIR'
-);
-console.log('[STARTUP] API keys loaded:', apiKeys.join(', '));
-console.log('[STARTUP] Claude model:', CLAUDE_MODEL || 'default (Claude Code / OmniRoute)');
-console.log('[STARTUP] ANTHROPIC_BASE_URL:', claudeEnv.ANTHROPIC_BASE_URL || '(not set — subscription auth)');
-console.log('[STARTUP] ANTHROPIC_API_KEY:', claudeEnv.ANTHROPIC_API_KEY ? 'kept (proxy auth)' : 'stripped (subscription auth)');
 
 // Every phone turn used to spawn a fresh CLI process. Without
 // --strict-mcp-config it tries to connect to every configured MCP server
@@ -148,9 +137,10 @@ const STRICT_MCP = process.env.PHONE_ENABLE_MCP !== '1';
  * Request bodies may also pass `model` to override per-call.
  */
 function resolveClaudeModel(requestModel) {
+  const fallback = (process.env.ANTHROPIC_BASE_URL || process.env.CLAUDE_USE_API_KEY) ? 'default' : 'claude-sonnet-5';
   const raw = (requestModel !== undefined && requestModel !== null && String(requestModel).trim() !== '')
     ? String(requestModel).trim()
-    : (process.env.CLAUDE_MODEL !== undefined ? process.env.CLAUDE_MODEL : 'claude-sonnet-5');
+    : (process.env.CLAUDE_MODEL !== undefined ? process.env.CLAUDE_MODEL : fallback);
   const value = String(raw).trim();
   if (!value || value.toLowerCase() === 'default' || value.toLowerCase() === 'none') {
     return null; // omit --model / SDK model option
@@ -159,6 +149,18 @@ function resolveClaudeModel(requestModel) {
 }
 
 const CLAUDE_MODEL = resolveClaudeModel();
+
+console.log('[STARTUP] Loaded environment with', Object.keys(claudeEnv).length, 'variables');
+console.log('[STARTUP] PATH includes:', claudeEnv.PATH.split(':').slice(0, 5).join(', '), '...');
+
+// Log which API keys are available (without showing values)
+const apiKeys = Object.keys(claudeEnv).filter(k =>
+  k.includes('API_KEY') || k.includes('TOKEN') || k.includes('SECRET') || k === 'PAI_DIR'
+);
+console.log('[STARTUP] API keys loaded:', apiKeys.join(', '));
+console.log('[STARTUP] Claude model:', CLAUDE_MODEL || 'default (Claude Code / OmniRoute)');
+console.log('[STARTUP] ANTHROPIC_BASE_URL:', claudeEnv.ANTHROPIC_BASE_URL || '(not set — subscription auth)');
+console.log('[STARTUP] ANTHROPIC_API_KEY:', claudeEnv.ANTHROPIC_API_KEY ? 'kept (proxy auth)' : 'stripped (subscription auth)');
 
 /**
  * Voice Context - Prepended to all voice queries
