@@ -103,7 +103,10 @@ Then start the host-side wrapper:
 
 ```bash
 cd claude-api-server
-CLAUDE_MODEL=claude-sonnet-5 node server.js
+# Default model is claude-sonnet-5. For OmniRoute / a custom API:
+#   CLAUDE_MODEL=default            # let Claude Code pick
+#   CLAUDE_MODEL=gemini-2.5-flash  # or whatever your proxy supports
+node server.js
 ```
 
 ## How local speech works

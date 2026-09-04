@@ -97,6 +97,7 @@ A healthy restart is under a minute and re-downloads nothing:
 ```powershell
 nssm install claude-api "C:\Program Files\nodejs\node.exe" `
   "C:\path\to\claude-api-server\server.js"
+# Default is claude-sonnet-5. OmniRoute / custom API: CLAUDE_MODEL=default
 nssm set claude-api AppEnvironmentExtra CLAUDE_MODEL=claude-sonnet-5
 nssm start claude-api
 ```
@@ -112,6 +113,7 @@ After=network.target
 Type=simple
 User=youruser
 WorkingDirectory=/path/to/claude-api-server
+# Default is claude-sonnet-5. OmniRoute / custom API: CLAUDE_MODEL=default
 Environment=CLAUDE_MODEL=claude-sonnet-5
 ExecStart=/usr/bin/node server.js
 Restart=always

@@ -106,9 +106,12 @@ function buildClaudeEnvironment() {
     CLAUDE_CODE_ENTRYPOINT: 'cli',
   };
 
-  // CRITICAL: Remove ANTHROPIC_API_KEY so Claude CLI uses subscription auth
-  // If ANTHROPIC_API_KEY is set (even to placeholder), CLI tries API auth instead
-  delete env.ANTHROPIC_API_KEY;
+  // CRITICAL: Only remove ANTHROPIC_API_KEY when NOT using custom API proxy
+  // If ANTHROPIC_BASE_URL or CLAUDE_USE_API_KEY is set, keep the key for proxy auth
+  // Otherwise delete it so Claude CLI uses subscription auth
+  if (!env.ANTHROPIC_BASE_URL && !env.CLAUDE_USE_API_KEY) {
+    delete env.ANTHROPIC_API_KEY;
+  }
 
   return env;
 }
@@ -123,6 +126,9 @@ const apiKeys = Object.keys(claudeEnv).filter(k =>
   k.includes('API_KEY') || k.includes('TOKEN') || k.includes('SECRET') || k === 'PAI_DIR'
 );
 console.log('[STARTUP] API keys loaded:', apiKeys.join(', '));
+console.log('[STARTUP] Claude model:', CLAUDE_MODEL || 'default (Claude Code / OmniRoute)');
+console.log('[STARTUP] ANTHROPIC_BASE_URL:', claudeEnv.ANTHROPIC_BASE_URL || '(not set — subscription auth)');
+console.log('[STARTUP] ANTHROPIC_API_KEY:', claudeEnv.ANTHROPIC_API_KEY ? 'kept (proxy auth)' : 'stripped (subscription auth)');
 
 // Every phone turn used to spawn a fresh CLI process. Without
 // --strict-mcp-config it tries to connect to every configured MCP server
@@ -132,8 +138,27 @@ console.log('[STARTUP] API keys loaded:', apiKeys.join(', '));
 // available over the phone.
 const STRICT_MCP = process.env.PHONE_ENABLE_MCP !== '1';
 
-// Model selection - Sonnet for balanced speed/quality
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
+/**
+ * Resolve the Claude model to use.
+ *
+ * OmniRoute / custom API proxies often don't support `claude-sonnet-5`.
+ * Set CLAUDE_MODEL to the proxy's model id, or to "" / "default" / "none"
+ * to omit --model entirely and let Claude Code / OmniRoute pick its own.
+ *
+ * Request bodies may also pass `model` to override per-call.
+ */
+function resolveClaudeModel(requestModel) {
+  const raw = (requestModel !== undefined && requestModel !== null && String(requestModel).trim() !== '')
+    ? String(requestModel).trim()
+    : (process.env.CLAUDE_MODEL !== undefined ? process.env.CLAUDE_MODEL : 'claude-sonnet-5');
+  const value = String(raw).trim();
+  if (!value || value.toLowerCase() === 'default' || value.toLowerCase() === 'none') {
+    return null; // omit --model / SDK model option
+  }
+  return value;
+}
+
+const CLAUDE_MODEL = resolveClaudeModel();
 
 /**
  * Voice Context - Prepended to all voice queries
@@ -194,21 +219,25 @@ Example response:
 const callSessions = new Map();
 
 class CallSession {
-  constructor(callId) {
+  constructor(callId, model = CLAUDE_MODEL) {
     this.callId = callId;
+    this.model = model;
     this._queue = [];
     this._queueWaiters = [];
     this._ended = false;
     this._pendingResultResolvers = [];
 
+    const options = {
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      strictMcpConfig: STRICT_MCP,
+    };
+    // Omit model so Claude Code / OmniRoute uses its own default
+    if (model) options.model = model;
+
     this.query = query({
       prompt: this._messageGenerator(),
-      options: {
-        model: CLAUDE_MODEL,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        strictMcpConfig: STRICT_MCP,
-      },
+      options,
     });
 
     this._consumeLoop().catch((err) => {
@@ -276,12 +305,12 @@ class CallSession {
   }
 }
 
-function getOrCreateSession(callId) {
+function getOrCreateSession(callId, model = CLAUDE_MODEL) {
   let session = callSessions.get(callId);
   if (!session) {
-    session = new CallSession(callId);
+    session = new CallSession(callId, model);
     callSessions.set(callId, session);
-    console.log(`[${new Date().toISOString()}] SDK session started: ${callId}`);
+    console.log(`[${new Date().toISOString()}] SDK session started: ${callId} (model=${model || 'default'})`);
   }
   return session;
 }
@@ -321,15 +350,16 @@ function parseClaudeStdout(stdout) {
 // Session storage for the one-shot /ask-structured path only.
 const structuredSessions = new Map();
 
-function runClaudeOnce({ fullPrompt, callId, timestamp }) {
+function runClaudeOnce({ fullPrompt, callId, timestamp, model = CLAUDE_MODEL }) {
   const startTime = Date.now();
 
   const args = [
     '--dangerously-skip-permissions',
     ...(STRICT_MCP ? ['--strict-mcp-config'] : []),
     '-p', fullPrompt,
-    '--model', CLAUDE_MODEL
   ];
+  // Omit --model so Claude Code / OmniRoute uses its own default
+  if (model) args.push('--model', model);
 
   if (callId) {
     if (structuredSessions.has(callId)) {
@@ -384,7 +414,8 @@ app.use((req, res, next) => {
  *   {
  *     "prompt": "What Docker containers are running?",
  *     "callId": "optional-call-uuid",
- *     "devicePrompt": "optional device-specific prompt"
+ *     "devicePrompt": "optional device-specific prompt",
+ *     "model": "optional model override (or \"default\" to omit --model)"
  *   }
  *
  * Response:
@@ -401,9 +432,10 @@ app.use((req, res, next) => {
  *   - This allows each device (NAS, Proxmox, etc.) to have its own identity and skills
  */
 app.post('/ask', async (req, res) => {
-  const { prompt, callId, devicePrompt } = req.body;
+  const { prompt, callId, devicePrompt, model: requestModel } = req.body;
   const startTime = Date.now();
   const timestamp = new Date().toISOString();
+  const model = resolveClaudeModel(requestModel);
 
   if (!prompt) {
     return res.status(400).json({
@@ -413,7 +445,7 @@ app.post('/ask', async (req, res) => {
   }
 
   console.log(`[${timestamp}] QUERY: "${prompt.substring(0, 100)}..."`);
-  console.log(`[${timestamp}] MODEL: ${CLAUDE_MODEL}`);
+  console.log(`[${timestamp}] MODEL: ${model || 'default (Claude Code / OmniRoute)'}`);
   console.log(`[${timestamp}] SESSION: callId=${callId || 'none'}, existing=${callId ? callSessions.has(callId) : false}`);
   console.log(`[${timestamp}] DEVICE PROMPT: ${devicePrompt ? 'Yes (' + devicePrompt.substring(0, 30) + '...)' : 'No'}`);
 
@@ -429,7 +461,7 @@ app.post('/ask', async (req, res) => {
      * every turn would just be redundant tokens (the CLI's --resume worked
      * the same way: system framing lived in turn 1's prompt).
      */
-    const session = callId ? getOrCreateSession(callId) : null;
+    const session = callId ? getOrCreateSession(callId, model) : null;
 
     let fullPrompt = '';
     if (!session || session._sentContext !== true) {
@@ -441,7 +473,7 @@ app.post('/ask', async (req, res) => {
     }
     fullPrompt += prompt;
 
-    const activeSession = session || getOrCreateSession(`__oneshot_${startTime}_${Math.random().toString(36).slice(2)}`);
+    const activeSession = session || getOrCreateSession(`__oneshot_${startTime}_${Math.random().toString(36).slice(2)}`, model);
 
     const result = await activeSession.sendMessage(fullPrompt);
 
@@ -512,9 +544,11 @@ app.post('/ask-structured', async (req, res) => {
     schema = {},
     includeVoiceContext = false,
     maxRetries = 1,
+    model: requestModel,
   } = req.body || {};
 
   const timestamp = new Date().toISOString();
+  const model = resolveClaudeModel(requestModel);
 
   if (!prompt) {
     return res.status(400).json({ success: false, error: 'Missing prompt in request body' });
@@ -535,7 +569,7 @@ app.post('/ask-structured', async (req, res) => {
   });
 
   console.log(`[${timestamp}] STRUCTURED QUERY: "${String(prompt).substring(0, 100)}..."`);
-  console.log(`[${timestamp}] MODEL: ${CLAUDE_MODEL}`);
+  console.log(`[${timestamp}] MODEL: ${model || 'default (Claude Code / OmniRoute)'}`);
   console.log(`[${timestamp}] SESSION: callId=${callId || 'none'}, existing=${callId ? (structuredSessions.has(callId) ? 'yes' : 'no') : 'none'}`);
 
   try {
@@ -547,7 +581,7 @@ app.post('/ask-structured', async (req, res) => {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       attemptsMade = attempt + 1;
-      const { code, stdout, stderr, duration_ms } = await runClaudeOnce({ fullPrompt, callId, timestamp });
+      const { code, stdout, stderr, duration_ms } = await runClaudeOnce({ fullPrompt, callId, timestamp, model });
       totalDuration += duration_ms;
 
       if (code !== 0) {
@@ -652,6 +686,8 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'claude-api-server',
+    model: CLAUDE_MODEL || 'default',
+    proxyAuth: Boolean(claudeEnv.ANTHROPIC_BASE_URL || claudeEnv.CLAUDE_USE_API_KEY),
     timestamp: new Date().toISOString()
   });
 });
